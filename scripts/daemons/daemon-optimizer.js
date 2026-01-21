@@ -185,15 +185,17 @@ function adjustParameters(ns, mode) {
     const oldConfig = { ...config };
 
     if (mode === "aggressive") {
-        // Stratégie plus agressive
-        if (config.hackPercent < 0.8 && Math.random() > 0.5) {
-            config.hackPercent = Math.min(0.9, config.hackPercent + 0.1);
-            ns.print(`   📈 hackPercent: ${oldConfig.hackPercent} → ${config.hackPercent}`);
-        }
-
-        if (config.securityThreshold > 2 && Math.random() > 0.5) {
-            config.securityThreshold = Math.max(2, config.securityThreshold - 1);
-            ns.print(`   📉 securityThreshold: ${oldConfig.securityThreshold} → ${config.securityThreshold}`);
+        // Stratégie plus agressive (Test A/B)
+        // On augmente le hackPercent drastiquement si on a de la marge
+        if (config.hackPercent < 0.8) {
+            config.hackPercent = Math.min(0.95, config.hackPercent + 0.05);
+            ns.print(`   📈 AGGRESSIVE: hackPercent ${oldConfig.hackPercent.toFixed(2)} → ${config.hackPercent.toFixed(2)}`);
+        } else {
+            // Si déjà haut, on tente de réduire le security buffer
+            if (config.securityThreshold > 1) {
+                config.securityThreshold = Math.max(1, config.securityThreshold - 2);
+                ns.print(`   📉 AGGRESSIVE: secThreshold ${oldConfig.securityThreshold} → ${config.securityThreshold}`);
+            }
         }
     } else if (mode === "minor") {
         // Ajustements mineurs aléatoires
@@ -227,7 +229,21 @@ function adaptToGamePhase(ns) {
     const hackLevel = ns.getHackingLevel();
     const servers = ns.getPurchasedServers();
 
+    // Charger la config BitNode si disponible
+    let bnConfig = { focus: "balanced", canHack: true };
+    try {
+        const bnData = ns.read("/data/bitnode-config.txt");
+        if (bnData) bnConfig = JSON.parse(bnData);
+    } catch (e) { }
+
     let phase = "early";
+
+    // Si on est en BN8 (Trading), on force un profil conservateur sur le hack pour ne pas gaspiller de RAM
+    if (!bnConfig.canHack) {
+        config.hackPercent = 0.1; // Minimal pour exp
+        ns.print("   🌍 BN Specifique: Hacking désactivé/réduit (Focus: " + bnConfig.focus + ")");
+        return;
+    }
 
     if (money > 1e12 && hackLevel > 1000) {
         phase = "endgame";
@@ -311,14 +327,20 @@ function printStatus(ns, currentIncome, cycle) {
  * Sauvegarder les données
  */
 function saveData(ns) {
-    const data = JSON.stringify({
-        config,
-        performanceHistory: performanceHistory.slice(-50),
-        targetStats,
-        savedAt: Date.now(),
-    });
+    // Sauvegarder uniquement si on a des données significatives
+    if (performanceHistory.length > 5 || Object.keys(targetStats).length > 0) {
+        const data = JSON.stringify({
+            config,
+            // On garde un historique plus long pour l'analyse long terme
+            performanceHistory: performanceHistory.slice(-200),
+            targetStats,
+            savedAt: Date.now(),
+            // Meta-data pour savoir si on doit reset les stats au prochain chargement (si nouveau BN)
+            bitNode: ns.getResetInfo().currentNode,
+        });
 
-    ns.write(DATA_FILE, data, "w");
+        ns.write(DATA_FILE, data, "w");
+    }
 }
 
 /**

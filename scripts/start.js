@@ -24,8 +24,13 @@ export async function main(ns) {
         const resetInfo = ns.getResetInfo();
         const bn = resetInfo.currentNode;
         ns.tprint(`🌍 BitNode: ${bn}`);
+        // Sauvegarder la config BitNode pour les autres daemons
+        const bnConfig = getBitNodeConfig(bn);
+        ns.write("/data/bitnode-config.txt", JSON.stringify(bnConfig), "w");
+        ns.tprint(`💾 Config BitNode chargée pour BN${bn}`);
     } catch (e) {
         // Fallback pour vieilles versions
+        ns.write("/data/bitnode-config.txt", JSON.stringify({ multiplier: 1, focus: "balanced" }), "w");
     }
 
     if (ram < threshold) {
@@ -37,4 +42,36 @@ export async function main(ns) {
         ns.tprint("▶️ Lancement de main.js...");
         ns.spawn("main.js");
     }
+}
+
+/**
+ * Configuration spécifique selon le BitNode
+ */
+function getBitNodeConfig(bn) {
+    const config = {
+        multiplier: 1,
+        focus: "balanced", // "hacking", "combat", "corporation", "balanced"
+        canHack: true,
+        canBuyServers: true,
+    };
+
+    switch (bn) {
+        case 1: // Source-File 1 (Genesis): Standard
+            break;
+        case 8: // Ghost of Wall Street: Trading only
+            config.focus = "trading";
+            config.canHack = false;
+            break;
+        case 9: // Hacktocracy: Hacknet only
+            config.focus = "hacknet";
+            break;
+        case 13: // The Stanek: Stanek focus
+            config.focus = "stanek";
+            break;
+        default:
+            config.focus = "balanced";
+            break;
+    }
+
+    return config;
 }

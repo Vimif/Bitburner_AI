@@ -23,6 +23,8 @@ const DAEMONS = [
     { name: "Sleeve Daemon", script: "/daemons/daemon-sleeve.js", ram: 0, critical: false },
     { name: "Factions Daemon", script: "/daemons/daemon-factions.js", ram: 0, critical: false },
     { name: "Stanek Daemon", script: "/daemons/daemon-stanek.js", ram: 0, critical: false },
+    { name: "Share Daemon", script: "/daemons/daemon-share.js", ram: 0, critical: false },
+    { name: "Prestige Daemon", script: "/daemons/daemon-prestige.js", ram: 0, critical: false },
     { name: "Bladeburner", script: "/daemons/daemon-bladeburner.js", ram: 0, critical: false },
     { name: "Corp Daemon", script: "/daemons/daemon-corp.js", ram: 0, critical: false },
 ];
