@@ -1,77 +1,25 @@
 /**
- * Bitburner AI - Hack Daemon v2.0
- * Système de hacking HWGW (Hack-Weaken-Grow-Weaken) avec Proto-Batching
+ * Bitburner AI - Hack Daemon (Lightweight)
+ * RAM optimisé: ~8GB
  * 
- * Améliorations v2.0:
- * - Proto-batching: Multiple batches en pipeline
- * - Pool de cibles: Prépare plusieurs serveurs en parallèle
- * - Distribution RAM optimisée: Gros serveurs d'abord
- * - Timing précis avec Formulas.exe si disponible
- * - Feedback vers l'optimizer
+ * Proto-batching HWGW avec pool de cibles
  * 
  * Usage: run daemon-hack.js
  */
 
-import { HACK_CONFIG, WORKER_RAM } from "../lib/constants.js";
-import {
-    scanAll,
-    getRootAccess,
-    canHack,
-    getAvailableRam,
-    formatMoney,
-    formatTime,
-    formatRam,
-} from "../lib/utils.js";
-import { getState, setState, sendFeedback, detectPhase } from "../lib/brain-state.js";
-
-// Chemins des workers
 const WORKERS = {
     hack: "/workers/hack.js",
     grow: "/workers/grow.js",
     weaken: "/workers/weaken.js",
 };
 
-// Configuration proto-batching
-const PROTO_CONFIG = {
-    BATCH_SPACING: 200,        // ms entre batches
-    MAX_BATCHES: 100,          // Batches simultanés max
-    TARGET_POOL_SIZE: 3,       // Nombre de cibles préparées
-    MIN_BATCH_RAM: 50,         // RAM minimum pour un batch
+const CONFIG = {
+    HACK_PERCENT: 0.5,
+    SECURITY_THRESHOLD: 5,
+    MONEY_THRESHOLD: 0.75,
+    BATCH_SPACING: 200,
+    TARGET_POOL_SIZE: 3,
 };
-
-// Config dynamique (sera mise à jour depuis l'optimizer)
-let dynamicConfig = null;
-let batchId = 0;
-
-/**
- * Lire la configuration de l'optimizer
- */
-function loadOptimizerConfig(ns) {
-    try {
-        const data = ns.read("/data/optimizer-config.txt");
-        if (data && data.length > 0) {
-            dynamicConfig = JSON.parse(data);
-            return true;
-        }
-    } catch (e) { }
-    return false;
-}
-
-/**
- * Obtenir une valeur de config (dynamique ou statique)
- */
-function getConfig(key) {
-    if (dynamicConfig && dynamicConfig[key] !== undefined) {
-        return dynamicConfig[key];
-    }
-    const keyMap = {
-        hackPercent: "HACK_PERCENT",
-        securityThreshold: "SECURITY_THRESHOLD",
-        moneyThreshold: "MONEY_THRESHOLD",
-        batchDelay: "BATCH_DELAY",
-    };
-    return HACK_CONFIG[keyMap[key]] || HACK_CONFIG[key];
-}
 
 /** @param {NS} ns */
 export async function main(ns) {
@@ -81,83 +29,63 @@ export async function main(ns) {
     const startTime = Date.now();
     let batchCount = 0;
     let totalStolen = 0;
-    let lastFeedbackTime = 0;
+    let batchId = 0;
 
-    ns.print("═══════════════════════════════════════");
-    ns.print("  🤖 BITBURNER AI - HACK DAEMON v2.0");
-    ns.print("═══════════════════════════════════════");
+    // Charger config dynamique
+    let config = { ...CONFIG };
 
-    // Boucle principale
+    ns.print("🤖 HACK DAEMON - Démarrage...");
+
     while (true) {
-        // Recharger la config de l'optimizer
-        loadOptimizerConfig(ns);
+        // Recharger config
+        try {
+            const data = ns.read("/data/optimizer-config.txt");
+            if (data) {
+                const parsed = JSON.parse(data);
+                config.HACK_PERCENT = parsed.hackPercent || CONFIG.HACK_PERCENT;
+                config.SECURITY_THRESHOLD = parsed.securityThreshold || CONFIG.SECURITY_THRESHOLD;
+            }
+        } catch (e) { }
 
-        // Mettre à jour l'état global
-        const phase = detectPhase(ns);
-        setState(ns, { phase });
+        // Propager root
+        await propagateRoot(ns);
 
-        // Phase 1: Propager l'accès root
-        await propagateRootAccess(ns);
-
-        // Phase 2: Copier les workers sur tous les serveurs
+        // Déployer workers
         await deployWorkers(ns);
 
-        // Phase 3: Obtenir le pool de cibles
-        const targetPool = getTargetPool(ns);
+        // Pool de cibles
+        const targets = getTargetPool(ns);
 
-        if (targetPool.length === 0) {
-            ns.print("⚠️ Aucune cible valide trouvée. Attente...");
+        ns.clearLog();
+        printStatus(ns, targets, batchCount, totalStolen, startTime, config);
+
+        if (targets.length === 0) {
+            ns.print("⚠️ Aucune cible valide");
             await ns.sleep(5000);
             continue;
         }
 
-        // Phase 4: Préparer les cibles non-prêtes
-        const preparedTargets = [];
-        const needsPrep = [];
-
-        for (const target of targetPool) {
-            if (isServerPrepared(ns, target.host)) {
-                preparedTargets.push(target);
+        // Traiter chaque cible
+        for (const target of targets) {
+            if (isPrepared(ns, target.host, config)) {
+                // Lancer un batch
+                const result = await executeBatch(ns, target.host, config, batchId++);
+                if (result.success) {
+                    batchCount++;
+                    totalStolen += result.stolen;
+                }
             } else {
-                needsPrep.push(target);
+                // Préparer
+                await prepareServer(ns, target.host, config);
             }
         }
 
-        // Afficher le statut
-        ns.clearLog();
-        printStatus(ns, targetPool, preparedTargets, batchCount, totalStolen, startTime);
-
-        // Phase 5: Préparation ou Proto-Batching
-        if (preparedTargets.length > 0) {
-            // Lancer des batches sur les cibles prêtes
-            const result = await executeProtoBatches(ns, preparedTargets);
-            batchCount += result.batches;
-            totalStolen += result.stolen;
-        }
-
-        // Préparer les autres cibles en parallèle
-        if (needsPrep.length > 0) {
-            await prepareServers(ns, needsPrep.slice(0, 2)); // Max 2 en préparation
-        }
-
-        // Envoyer feedback à l'optimizer (toutes les 30s)
-        if (Date.now() - lastFeedbackTime > 30000) {
-            sendFeedback(ns, "hack", {
-                batchCount,
-                totalStolen,
-                incomePerSec: totalStolen / ((Date.now() - startTime) / 1000),
-                preparedTargets: preparedTargets.length,
-                totalTargets: targetPool.length,
-            });
-            lastFeedbackTime = Date.now();
-        }
-
-        await ns.sleep(PROTO_CONFIG.BATCH_SPACING);
+        await ns.sleep(config.BATCH_SPACING);
     }
 }
 
 /**
- * Obtenir le pool des meilleures cibles
+ * Pool des meilleures cibles
  */
 function getTargetPool(ns) {
     const servers = scanAll(ns);
@@ -166,294 +94,228 @@ function getTargetPool(ns) {
     for (const host of servers) {
         if (!canHack(ns, host)) continue;
 
-        const score = getAdvancedScore(ns, host);
-        if (score > 0) {
-            targets.push({ host, score });
-        }
-    }
-
-    // Trier par score et retourner le top N
-    targets.sort((a, b) => b.score - a.score);
-    return targets.slice(0, PROTO_CONFIG.TARGET_POOL_SIZE);
-}
-
-/**
- * Score avancé incluant le temps de préparation
- */
-function getAdvancedScore(ns, host) {
-    const maxMoney = ns.getServerMaxMoney(host);
-    const hackTime = ns.getHackTime(host);
-    const hackChance = ns.hackAnalyzeChance(host);
-    const security = ns.getServerSecurityLevel(host);
-    const minSec = ns.getServerMinSecurityLevel(host);
-    const money = ns.getServerMoneyAvailable(host);
-
-    if (maxMoney <= 0 || hackTime <= 0) return 0;
-
-    // Pénalité pour serveurs non préparés
-    const secPenalty = 1 + (security - minSec) * 0.15;
-    const moneyPenalty = 1 + (1 - money / maxMoney) * 0.3;
-
-    // Bonus pour serveurs déjà prêts
-    const prepBonus = isServerPrepared(ns, host) ? 2 : 1;
-
-    return (maxMoney * hackChance * prepBonus) / (hackTime * secPenalty * moneyPenalty);
-}
-
-/**
- * Vérifier si un serveur est prêt pour le hacking
- */
-function isServerPrepared(ns, host) {
-    const security = ns.getServerSecurityLevel(host);
-    const minSec = ns.getServerMinSecurityLevel(host);
-    const money = ns.getServerMoneyAvailable(host);
-    const maxMoney = ns.getServerMaxMoney(host);
-
-    const secThreshold = getConfig("securityThreshold") || 5;
-    const moneyThreshold = getConfig("moneyThreshold") || 0.75;
-
-    return security <= minSec + secThreshold && money >= maxMoney * moneyThreshold;
-}
-
-/**
- * Préparer plusieurs serveurs en parallèle
- */
-async function prepareServers(ns, targets) {
-    for (const target of targets) {
-        const host = target.host;
-        const security = ns.getServerSecurityLevel(host);
-        const minSec = ns.getServerMinSecurityLevel(host);
-        const money = ns.getServerMoneyAvailable(host);
         const maxMoney = ns.getServerMaxMoney(host);
+        const hackTime = ns.getHackTime(host);
+        const chance = ns.hackAnalyzeChance(host);
 
-        const secThreshold = getConfig("securityThreshold") || 5;
-        const moneyThreshold = getConfig("moneyThreshold") || 0.75;
+        if (maxMoney <= 0 || hackTime <= 0) continue;
 
-        // Priorité: d'abord réduire la sécurité
-        if (security > minSec + secThreshold) {
-            const threads = Math.ceil((security - minSec) / 0.05);
-            await distributeWork(ns, host, "weaken", Math.min(threads, 500));
-        }
-        // Ensuite augmenter l'argent
-        else if (money < maxMoney * moneyThreshold) {
-            const growthNeeded = maxMoney / Math.max(money, 1);
-            const threads = Math.ceil(ns.growthAnalyze(host, growthNeeded));
-            await distributeWork(ns, host, "grow", Math.min(threads, 500));
-        }
+        const score = (maxMoney * chance) / hackTime;
+        targets.push({ host, score });
+    }
+
+    return targets
+        .sort((a, b) => b.score - a.score)
+        .slice(0, CONFIG.TARGET_POOL_SIZE);
+}
+
+/**
+ * Vérifier si serveur prêt
+ */
+function isPrepared(ns, host, config) {
+    const sec = ns.getServerSecurityLevel(host);
+    const minSec = ns.getServerMinSecurityLevel(host);
+    const money = ns.getServerMoneyAvailable(host);
+    const maxMoney = ns.getServerMaxMoney(host);
+
+    return sec <= minSec + config.SECURITY_THRESHOLD &&
+        money >= maxMoney * config.MONEY_THRESHOLD;
+}
+
+/**
+ * Préparer un serveur
+ */
+async function prepareServer(ns, host, config) {
+    const sec = ns.getServerSecurityLevel(host);
+    const minSec = ns.getServerMinSecurityLevel(host);
+    const money = ns.getServerMoneyAvailable(host);
+    const maxMoney = ns.getServerMaxMoney(host);
+
+    if (sec > minSec + config.SECURITY_THRESHOLD) {
+        const threads = Math.ceil((sec - minSec) / 0.05);
+        await distribute(ns, host, "weaken", Math.min(threads, 500));
+    } else if (money < maxMoney * config.MONEY_THRESHOLD) {
+        const mult = maxMoney / Math.max(money, 1);
+        const threads = Math.ceil(ns.growthAnalyze(host, mult));
+        await distribute(ns, host, "grow", Math.min(threads, 500));
     }
 }
 
 /**
- * Exécuter des proto-batches sur les cibles préparées
+ * Exécuter un batch HWGW
  */
-async function executeProtoBatches(ns, targets) {
-    let totalBatches = 0;
-    let totalStolen = 0;
-
-    // Calculer la RAM disponible
-    const availableRam = getAvailableRam(ns);
-    const totalFreeRam = availableRam.reduce((sum, s) => sum + s.freeRam, 0);
-
-    if (totalFreeRam < PROTO_CONFIG.MIN_BATCH_RAM) {
-        return { batches: 0, stolen: 0 };
-    }
-
-    // Distribuer les batches sur les cibles
-    for (const target of targets) {
-        const result = await executeSingleBatch(ns, target.host);
-        if (result.success) {
-            totalBatches++;
-            totalStolen += result.expectedSteal;
-        }
-    }
-
-    return { batches: totalBatches, stolen: totalStolen };
-}
-
-/**
- * Exécuter un seul batch HWGW
- */
-async function executeSingleBatch(ns, target) {
+async function executeBatch(ns, target, config, uid) {
     const maxMoney = ns.getServerMaxMoney(target);
-    const hackPercent = getConfig("hackPercent") || 0.5;
+    const hackAmount = maxMoney * config.HACK_PERCENT;
 
-    // Calculer les threads nécessaires
-    const hackAmount = maxMoney * hackPercent;
     const hackThreads = Math.max(1, Math.floor(ns.hackAnalyzeThreads(target, hackAmount)));
-
-    // Sécurité ajoutée par le hack
     const hackSecInc = ns.hackAnalyzeSecurity(hackThreads, target);
     const weaken1Threads = Math.ceil(hackSecInc / 0.05);
 
-    // Threads de grow pour récupérer l'argent volé
-    const growThreads = Math.ceil(ns.growthAnalyze(target, 1 / (1 - hackPercent)));
-
-    // Sécurité ajoutée par le grow
+    const growMult = 1 / (1 - config.HACK_PERCENT);
+    const growThreads = Math.ceil(ns.growthAnalyze(target, growMult));
     const growSecInc = ns.growthAnalyzeSecurity(growThreads, target);
     const weaken2Threads = Math.ceil(growSecInc / 0.05);
 
-    // Calculer les timings
-    const times = getTimes(ns, target);
-    const step = HACK_CONFIG.STEP_DELAY || 40;
+    const weakenTime = ns.getWeakenTime(target);
+    const hackTime = ns.getHackTime(target);
+    const growTime = ns.getGrowTime(target);
+    const step = 40;
 
-    // Ordre d'arrivée: Hack → Weaken1 → Grow → Weaken2
-    const hackDelay = Math.max(0, times.weakenTime - times.hackTime - step * 3);
-    const weaken1Delay = 0;
-    const growDelay = Math.max(0, times.weakenTime - times.growTime - step);
+    const hackDelay = Math.max(0, weakenTime - hackTime - step * 3);
+    const growDelay = Math.max(0, weakenTime - growTime - step);
     const weaken2Delay = step * 2;
 
-    // Générer un ID unique pour ce batch
-    const uid = `${batchId++}-${Date.now()}`;
-
-    // Lancer les opérations
     let launched = 0;
-    launched += await distributeWork(ns, target, "hack", hackThreads, hackDelay, uid);
-    launched += await distributeWork(ns, target, "weaken", weaken1Threads, weaken1Delay, uid);
-    launched += await distributeWork(ns, target, "grow", growThreads, growDelay, uid);
-    launched += await distributeWork(ns, target, "weaken", weaken2Threads, weaken2Delay, uid);
+    launched += await distribute(ns, target, "hack", hackThreads, hackDelay);
+    launched += await distribute(ns, target, "weaken", weaken1Threads, 0);
+    launched += await distribute(ns, target, "grow", growThreads, growDelay);
+    launched += await distribute(ns, target, "weaken", weaken2Threads, weaken2Delay);
 
     if (launched > 0) {
-        const expectedSteal = hackAmount * ns.hackAnalyzeChance(target);
-        return { success: true, expectedSteal };
+        const stolen = hackAmount * ns.hackAnalyzeChance(target);
+        return { success: true, stolen };
     }
-
-    return { success: false, expectedSteal: 0 };
+    return { success: false, stolen: 0 };
 }
 
 /**
- * Calculer les temps d'exécution (avec ou sans Formulas)
+ * Distribuer le travail
  */
-function getTimes(ns, target) {
-    if (ns.fileExists("Formulas.exe", "home")) {
-        try {
-            const server = ns.getServer(target);
-            const player = ns.getPlayer();
-
-            server.hackDifficulty = server.minDifficulty;
-            server.moneyAvailable = server.moneyMax;
-
-            return {
-                hackTime: ns.formulas.hacking.hackTime(server, player),
-                growTime: ns.formulas.hacking.growTime(server, player),
-                weakenTime: ns.formulas.hacking.weakenTime(server, player),
-            };
-        } catch (e) { }
-    }
-
-    return {
-        hackTime: ns.getHackTime(target),
-        growTime: ns.getGrowTime(target),
-        weakenTime: ns.getWeakenTime(target),
-    };
-}
-
-/**
- * Distribuer le travail sur les serveurs disponibles
- */
-async function distributeWork(ns, target, type, threads, delay = 0, uid = "") {
+async function distribute(ns, target, type, threads, delay = 0) {
     if (threads <= 0) return 0;
 
-    const workerScript = WORKERS[type];
-    const workerRam = WORKER_RAM[type];
+    const script = WORKERS[type];
+    const scriptRam = ns.getScriptRam(script);
     const servers = getAvailableRam(ns);
 
-    let threadsRemaining = threads;
-    let threadsLaunched = 0;
+    let remaining = threads;
+    let launched = 0;
 
-    for (const server of servers) {
-        if (threadsRemaining <= 0) break;
+    for (const srv of servers) {
+        if (remaining <= 0) break;
 
-        const maxThreads = Math.floor(server.freeRam / workerRam);
-        if (maxThreads <= 0) continue;
+        const maxT = Math.floor(srv.free / scriptRam);
+        if (maxT <= 0) continue;
 
-        const threadsToRun = Math.min(maxThreads, threadsRemaining);
-
-        const pid = ns.exec(workerScript, server.host, threadsToRun, target, delay, uid);
+        const t = Math.min(maxT, remaining);
+        const pid = ns.exec(script, srv.host, t, target, delay, Date.now());
 
         if (pid > 0) {
-            threadsLaunched += threadsToRun;
-            threadsRemaining -= threadsToRun;
+            launched += t;
+            remaining -= t;
         }
     }
 
-    return threadsLaunched;
+    return launched;
 }
 
 /**
- * Propager l'accès root sur tous les serveurs possibles
+ * RAM disponible par serveur
  */
-async function propagateRootAccess(ns) {
+function getAvailableRam(ns) {
     const servers = scanAll(ns);
+    const result = [];
 
     for (const host of servers) {
-        if (!ns.hasRootAccess(host)) {
-            getRootAccess(ns, host);
+        if (!ns.hasRootAccess(host)) continue;
+        const max = ns.getServerMaxRam(host);
+        const used = ns.getServerUsedRam(host);
+        const free = max - used;
+        if (free > 0) result.push({ host, free, max });
+    }
+
+    return result.sort((a, b) => b.free - a.free);
+}
+
+/**
+ * Scanner serveurs
+ */
+function scanAll(ns) {
+    const servers = new Set();
+    const queue = ["home"];
+    while (queue.length > 0) {
+        const current = queue.shift();
+        if (servers.has(current)) continue;
+        servers.add(current);
+        for (const n of ns.scan(current)) {
+            if (!servers.has(n)) queue.push(n);
         }
+    }
+    return Array.from(servers);
+}
+
+/**
+ * Peut-on hacker?
+ */
+function canHack(ns, host) {
+    if (host === "home") return false;
+    if (host.startsWith("pserv-")) return false;
+    if (!ns.hasRootAccess(host)) return false;
+    if (ns.getServerRequiredHackingLevel(host) > ns.getHackingLevel()) return false;
+    if (ns.getServerMaxMoney(host) <= 0) return false;
+    return true;
+}
+
+/**
+ * Propager root
+ */
+async function propagateRoot(ns) {
+    for (const host of scanAll(ns)) {
+        if (ns.hasRootAccess(host)) continue;
+        try { ns.brutessh(host); } catch (e) { }
+        try { ns.ftpcrack(host); } catch (e) { }
+        try { ns.relaysmtp(host); } catch (e) { }
+        try { ns.httpworm(host); } catch (e) { }
+        try { ns.sqlinject(host); } catch (e) { }
+        try { ns.nuke(host); } catch (e) { }
     }
 }
 
 /**
- * Déployer les workers sur tous les serveurs
+ * Déployer workers
  */
 async function deployWorkers(ns) {
-    const servers = scanAll(ns);
-    const workerFiles = Object.values(WORKERS);
-
-    for (const host of servers) {
+    const files = Object.values(WORKERS);
+    for (const host of scanAll(ns)) {
         if (host === "home") continue;
         if (!ns.hasRootAccess(host)) continue;
         if (ns.getServerMaxRam(host) === 0) continue;
-
-        let needsCopy = false;
-        for (const file of workerFiles) {
-            if (!ns.fileExists(file, host)) {
-                needsCopy = true;
-                break;
-            }
-        }
-
-        if (needsCopy) {
-            ns.scp(workerFiles, host, "home");
-        }
+        ns.scp(files, host, "home");
     }
 }
 
 /**
- * Afficher le statut actuel
+ * Afficher statut
  */
-function printStatus(ns, targetPool, preparedTargets, batchCount, totalStolen, startTime) {
+function printStatus(ns, targets, batches, stolen, startTime, config) {
     const runtime = Date.now() - startTime;
-    const moneyPerSec = totalStolen / (runtime / 1000);
-
-    // RAM totale
-    const availableRam = getAvailableRam(ns);
-    const totalFreeRam = availableRam.reduce((sum, s) => sum + s.freeRam, 0);
-    const totalMaxRam = availableRam.reduce((sum, s) => sum + s.maxRam, 0);
+    const incomePerSec = stolen / (runtime / 1000);
 
     ns.print("═══════════════════════════════════════");
-    ns.print("  🤖 HACK DAEMON v2.0 (Proto-Batch)");
+    ns.print("  🤖 HACK DAEMON (Proto-Batch)");
     ns.print("═══════════════════════════════════════");
-    ns.print("");
-    ns.print(`💾 RAM: ${formatRam(totalFreeRam)} / ${formatRam(totalMaxRam)}`);
-    ns.print(`📈 Config: ${(getConfig("hackPercent") * 100).toFixed(0)}% hack`);
+    ns.print(`⚙️ Config: ${(config.HACK_PERCENT * 100).toFixed(0)}% hack`);
+    ns.print(`📊 Batches: ${batches}`);
+    ns.print(`💰 Volé: ${formatMoney(stolen)}`);
+    ns.print(`📈 Income: ${formatMoney(incomePerSec)}/sec`);
     ns.print("");
 
-    ns.print("🎯 Pool de cibles:");
-    for (const target of targetPool) {
-        const info = ns.getServer(target.host);
-        const prepared = isServerPrepared(ns, target.host);
-        const icon = prepared ? "🟢" : "🟡";
-        const money = ns.getServerMoneyAvailable(target.host);
-        const maxMoney = ns.getServerMaxMoney(target.host);
-        ns.print(`   ${icon} ${target.host}: ${formatMoney(money)} / ${formatMoney(maxMoney)}`);
+    ns.print("🎯 Cibles:");
+    for (const t of targets) {
+        const prep = isPrepared(ns, t.host, config);
+        const icon = prep ? "🟢" : "🟡";
+        const money = ns.getServerMoneyAvailable(t.host);
+        const max = ns.getServerMaxMoney(t.host);
+        ns.print(`   ${icon} ${t.host}: ${formatMoney(money)}/${formatMoney(max)}`);
     }
     ns.print("");
+}
 
-    ns.print("📊 Statistiques:");
-    ns.print(`   Batches: ${batchCount}`);
-    ns.print(`   Total volé: ${formatMoney(totalStolen)}`);
-    ns.print(`   $/sec: ${formatMoney(moneyPerSec)}`);
-    ns.print(`   Temps: ${formatTime(runtime)}`);
-    ns.print(`   Cibles prêtes: ${preparedTargets.length}/${targetPool.length}`);
-    ns.print("");
+function formatMoney(n) {
+    if (n >= 1e12) return "$" + (n / 1e12).toFixed(2) + "t";
+    if (n >= 1e9) return "$" + (n / 1e9).toFixed(2) + "b";
+    if (n >= 1e6) return "$" + (n / 1e6).toFixed(2) + "m";
+    if (n >= 1e3) return "$" + (n / 1e3).toFixed(2) + "k";
+    return "$" + n.toFixed(0);
 }

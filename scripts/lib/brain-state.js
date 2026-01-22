@@ -131,6 +131,118 @@ export function determinePriority(ns, state) {
     return "money";
 }
 
+// ====== SYSTÈME DE COMMANDES INTER-DAEMONS ======
+
+const COMMAND_FILE = "/data/daemon-commands.txt";
+
+/**
+ * Envoyer une commande à un daemon
+ * @param {NS} ns
+ * @param {string} targetDaemon - ID du daemon cible
+ * @param {string} command - Commande à exécuter
+ * @param {object} params - Paramètres de la commande
+ */
+export function sendCommand(ns, targetDaemon, command, params = {}) {
+    const commands = getCommands(ns);
+
+    commands.push({
+        target: targetDaemon,
+        command,
+        params,
+        timestamp: Date.now(),
+        executed: false,
+    });
+
+    // Garder seulement les 50 dernières commandes
+    while (commands.length > 50) {
+        commands.shift();
+    }
+
+    ns.write(COMMAND_FILE, JSON.stringify(commands, null, 2), "w");
+}
+
+/**
+ * Lire les commandes pour un daemon
+ * @param {NS} ns
+ * @param {string} daemonId - ID du daemon
+ * @returns {object[]} Commandes non exécutées
+ */
+export function getCommandsForDaemon(ns, daemonId) {
+    const commands = getCommands(ns);
+    return commands.filter(c => c.target === daemonId && !c.executed);
+}
+
+/**
+ * Marquer une commande comme exécutée
+ * @param {NS} ns
+ * @param {number} timestamp - Timestamp de la commande
+ */
+export function markCommandExecuted(ns, timestamp) {
+    const commands = getCommands(ns);
+    const cmd = commands.find(c => c.timestamp === timestamp);
+    if (cmd) {
+        cmd.executed = true;
+        ns.write(COMMAND_FILE, JSON.stringify(commands, null, 2), "w");
+    }
+}
+
+/**
+ * Obtenir toutes les commandes
+ */
+function getCommands(ns) {
+    try {
+        const data = ns.read(COMMAND_FILE);
+        if (data && data.length > 0) {
+            return JSON.parse(data);
+        }
+    } catch (e) { }
+    return [];
+}
+
+// ====== SYSTÈME DE DIRECTIVES GLOBALES ======
+
+const DIRECTIVES_FILE = "/data/ai-directives.txt";
+
+/**
+ * Définir une directive globale
+ * @param {NS} ns
+ * @param {string} key - Clé de la directive
+ * @param {any} value - Valeur
+ */
+export function setDirective(ns, key, value) {
+    const directives = getDirectives(ns);
+    directives[key] = {
+        value,
+        timestamp: Date.now(),
+    };
+    ns.write(DIRECTIVES_FILE, JSON.stringify(directives, null, 2), "w");
+}
+
+/**
+ * Lire une directive
+ * @param {NS} ns
+ * @param {string} key
+ * @param {any} defaultValue
+ * @returns {any}
+ */
+export function getDirective(ns, key, defaultValue = null) {
+    const directives = getDirectives(ns);
+    return directives[key]?.value ?? defaultValue;
+}
+
+/**
+ * Obtenir toutes les directives
+ */
+export function getDirectives(ns) {
+    try {
+        const data = ns.read(DIRECTIVES_FILE);
+        if (data && data.length > 0) {
+            return JSON.parse(data);
+        }
+    } catch (e) { }
+    return {};
+}
+
 /**
  * Envoyer du feedback depuis un daemon
  * @param {NS} ns
