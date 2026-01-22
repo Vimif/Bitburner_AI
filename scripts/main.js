@@ -1,32 +1,44 @@
 /**
- * Bitburner AI - Main Orchestrator
+ * Bitburner AI - Main Orchestrator v2.0
  * Script principal qui lance et gère tous les daemons
  * 
- * Usage: run main.js
+ * Améliorations v2.0:
+ * - Respect des configurations BitNode (skip/priority daemons)
+ * - Intégration brain-state
+ * - Stats réseau améliorées
+ * - Meilleure gestion des erreurs
  * 
- * Ce script est le point d'entrée de l'IA Bitburner.
- * Il lance automatiquement tous les daemons et surveille leur état.
+ * Usage: run main.js
  */
 
-import { scanAll, getRootAccess, formatMoney, formatTime, formatRam } from "./lib/utils.js";
+import {
+    scanAll,
+    getRootAccess,
+    formatMoney,
+    formatTime,
+    formatRam,
+    getNetworkRamStats,
+    readJSON
+} from "./lib/utils.js";
+import { getState, setState, detectPhase } from "./lib/brain-state.js";
 
-// Configuration des daemons
+// Configuration des daemons (ordre de priorité)
 const DAEMONS = [
-    { name: "Optimizer", script: "/daemons/daemon-optimizer.js", ram: 0, critical: false },
-    { name: "Hack Daemon", script: "/daemons/daemon-hack.js", ram: 0, critical: true },
-    { name: "Server Daemon", script: "/daemons/daemon-servers.js", ram: 0, critical: false },
-    { name: "Hacknet Daemon", script: "/daemons/daemon-hacknet.js", ram: 0, critical: false },
-    { name: "Contracts Daemon", script: "/daemons/daemon-contracts.js", ram: 0, critical: false },
-    { name: "Stocks Daemon", script: "/daemons/daemon-stocks.js", ram: 0, critical: false },
-    { name: "Buyer Daemon", script: "/daemons/daemon-buyer.js", ram: 0, critical: false },
-    { name: "Gang Daemon", script: "/daemons/daemon-gang.js", ram: 0, critical: false },
-    { name: "Sleeve Daemon", script: "/daemons/daemon-sleeve.js", ram: 0, critical: false },
-    { name: "Factions Daemon", script: "/daemons/daemon-factions.js", ram: 0, critical: false },
-    { name: "Stanek Daemon", script: "/daemons/daemon-stanek.js", ram: 0, critical: false },
-    { name: "Share Daemon", script: "/daemons/daemon-share.js", ram: 0, critical: false },
-    { name: "Prestige Daemon", script: "/daemons/daemon-prestige.js", ram: 0, critical: false },
-    { name: "Bladeburner", script: "/daemons/daemon-bladeburner.js", ram: 0, critical: false },
-    { name: "Corp Daemon", script: "/daemons/daemon-corp.js", ram: 0, critical: false },
+    { name: "Optimizer", script: "/daemons/daemon-optimizer.js", id: "optimizer", ram: 0, critical: false },
+    { name: "Hack Daemon", script: "/daemons/daemon-hack.js", id: "hack", ram: 0, critical: true },
+    { name: "Server Daemon", script: "/daemons/daemon-servers.js", id: "servers", ram: 0, critical: false },
+    { name: "Hacknet Daemon", script: "/daemons/daemon-hacknet.js", id: "hacknet", ram: 0, critical: false },
+    { name: "Contracts Daemon", script: "/daemons/daemon-contracts.js", id: "contracts", ram: 0, critical: false },
+    { name: "Stocks Daemon", script: "/daemons/daemon-stocks.js", id: "stocks", ram: 0, critical: false },
+    { name: "Buyer Daemon", script: "/daemons/daemon-buyer.js", id: "buyer", ram: 0, critical: false },
+    { name: "Gang Daemon", script: "/daemons/daemon-gang.js", id: "gang", ram: 0, critical: false },
+    { name: "Sleeve Daemon", script: "/daemons/daemon-sleeve.js", id: "sleeve", ram: 0, critical: false },
+    { name: "Factions Daemon", script: "/daemons/daemon-factions.js", id: "factions", ram: 0, critical: false },
+    { name: "Stanek Daemon", script: "/daemons/daemon-stanek.js", id: "stanek", ram: 0, critical: false },
+    { name: "Share Daemon", script: "/daemons/daemon-share.js", id: "share", ram: 0, critical: false },
+    { name: "Prestige Daemon", script: "/daemons/daemon-prestige.js", id: "prestige", ram: 0, critical: false },
+    { name: "Bladeburner", script: "/daemons/daemon-bladeburner.js", id: "bladeburner", ram: 0, critical: false },
+    { name: "Corp Daemon", script: "/daemons/daemon-corp.js", id: "corp", ram: 0, critical: false },
 ];
 
 // Scripts à copier sur tous les serveurs
@@ -43,12 +55,19 @@ export async function main(ns) {
 
     const startTime = Date.now();
 
+    // Charger la config BitNode
+    const bnConfig = readJSON(ns, "/data/bitnode-config.txt") || {
+        skipDaemons: [],
+        priorityDaemons: [],
+        focus: "balanced",
+    };
+
     // Affichage initial
-    printBanner(ns);
+    printBanner(ns, bnConfig);
 
     // Phase 1: Initialisation
     ns.print("📦 Phase 1: Initialisation...");
-    await initialize(ns);
+    await initialize(ns, bnConfig);
 
     // Phase 2: Propagation des accès root
     ns.print("🔓 Phase 2: Propagation root...");
@@ -60,7 +79,7 @@ export async function main(ns) {
 
     // Phase 4: Lancement des daemons
     ns.print("🚀 Phase 4: Lancement daemons...");
-    await launchDaemons(ns);
+    await launchDaemons(ns, bnConfig);
 
     // Boucle principale de monitoring
     ns.print("✅ Tous les systèmes sont opérationnels!");
@@ -68,10 +87,15 @@ export async function main(ns) {
 
     while (true) {
         ns.clearLog();
-        printStatus(ns, startTime);
+
+        // Mettre à jour l'état global
+        updateGlobalState(ns);
+
+        // Afficher le statut
+        printStatus(ns, startTime, bnConfig);
 
         // Vérifier et relancer les daemons si nécessaire
-        await checkDaemons(ns);
+        await checkDaemons(ns, bnConfig);
 
         // Continuer à propager root sur nouveaux serveurs
         await propagateRoot(ns);
@@ -83,26 +107,50 @@ export async function main(ns) {
 /**
  * Afficher la bannière de démarrage
  */
-function printBanner(ns) {
+function printBanner(ns, bnConfig) {
     ns.print("");
     ns.print("╔══════════════════════════════════════════╗");
     ns.print("║                                          ║");
-    ns.print("║     🤖 BITBURNER AI v1.0                 ║");
+    ns.print("║     🤖 BITBURNER AI v2.0                 ║");
     ns.print("║     Système d'automatisation avancé      ║");
     ns.print("║                                          ║");
     ns.print("╚══════════════════════════════════════════╝");
+    ns.print("");
+    ns.print(`🌍 BitNode: ${bnConfig.bitNode || "?"}`);
+    ns.print(`🎯 Focus: ${bnConfig.focus || "balanced"}`);
+    if (bnConfig.description) {
+        ns.print(`📋 ${bnConfig.description}`);
+    }
     ns.print("");
 }
 
 /**
  * Initialisation du système
  */
-async function initialize(ns) {
-    // Calculer la RAM de chaque daemon
+async function initialize(ns, bnConfig) {
+    const activeDaemons = [];
+
+    // Calculer la RAM de chaque daemon et déterminer lesquels activer
     for (const daemon of DAEMONS) {
+        // Vérifier si ce daemon doit être skippé
+        if (bnConfig.skipDaemons?.includes(daemon.id)) {
+            daemon.skip = true;
+            ns.print(`   ⏭️ ${daemon.name}: SKIP (BitNode config)`);
+            continue;
+        }
+
         daemon.ram = ns.getScriptRam(daemon.script);
-        ns.print(`   ${daemon.name}: ${formatRam(daemon.ram)}`);
+
+        // Vérifier si prioritaire
+        daemon.priority = bnConfig.priorityDaemons?.includes(daemon.id) || false;
+
+        const priorityMark = daemon.priority ? "⭐ " : "";
+        ns.print(`   ${priorityMark}${daemon.name}: ${formatRam(daemon.ram)}`);
+        activeDaemons.push(daemon.id);
     }
+
+    // Mettre à jour le state
+    setState(ns, { activeDaemons });
 
     await ns.sleep(500);
 }
@@ -150,8 +198,20 @@ async function deployWorkers(ns) {
 /**
  * Lancer tous les daemons
  */
-async function launchDaemons(ns) {
-    for (const daemon of DAEMONS) {
+async function launchDaemons(ns, bnConfig) {
+    // Trier les daemons: prioritaires d'abord
+    const sortedDaemons = [...DAEMONS].sort((a, b) => {
+        if (a.priority && !b.priority) return -1;
+        if (!a.priority && b.priority) return 1;
+        if (a.critical && !b.critical) return -1;
+        if (!a.critical && b.critical) return 1;
+        return 0;
+    });
+
+    for (const daemon of sortedDaemons) {
+        // Skip si marqué comme tel
+        if (daemon.skip) continue;
+
         if (ns.isRunning(daemon.script, "home")) {
             ns.print(`   ⏭️ ${daemon.name} déjà en cours`);
             continue;
@@ -172,7 +232,8 @@ async function launchDaemons(ns) {
         const pid = ns.run(daemon.script);
 
         if (pid > 0) {
-            ns.print(`   ✅ ${daemon.name} lancé (PID: ${pid})`);
+            const priorityMark = daemon.priority ? "⭐ " : "";
+            ns.print(`   ✅ ${priorityMark}${daemon.name} lancé (PID: ${pid})`);
         } else {
             ns.print(`   ❌ ${daemon.name}: Échec du lancement`);
         }
@@ -184,8 +245,10 @@ async function launchDaemons(ns) {
 /**
  * Vérifier l'état des daemons et relancer si nécessaire
  */
-async function checkDaemons(ns) {
+async function checkDaemons(ns, bnConfig) {
     for (const daemon of DAEMONS) {
+        if (daemon.skip) continue;
+
         if (!ns.isRunning(daemon.script, "home")) {
             const homeRam = ns.getServerMaxRam("home");
             const usedRam = ns.getServerUsedRam("home");
@@ -200,25 +263,33 @@ async function checkDaemons(ns) {
 }
 
 /**
+ * Mettre à jour l'état global
+ */
+function updateGlobalState(ns) {
+    const phase = detectPhase(ns);
+    setState(ns, {
+        phase,
+        stats: {
+            hackingLevel: ns.getHackingLevel(),
+            netWorth: ns.getServerMoneyAvailable("home"),
+        }
+    });
+}
+
+/**
  * Afficher le statut actuel
  */
-function printStatus(ns, startTime) {
+function printStatus(ns, startTime, bnConfig) {
     const runtime = Date.now() - startTime;
     const money = ns.getServerMoneyAvailable("home");
     const servers = scanAll(ns);
+    const state = getState(ns);
 
     // Compter les serveurs avec root
     const rootedServers = servers.filter(s => ns.hasRootAccess(s)).length;
 
-    // Calculer la RAM totale disponible
-    let totalRam = 0;
-    let usedRam = 0;
-    for (const host of servers) {
-        if (ns.hasRootAccess(host)) {
-            totalRam += ns.getServerMaxRam(host);
-            usedRam += ns.getServerUsedRam(host);
-        }
-    }
+    // Calculer la RAM réseau
+    const ramStats = getNetworkRamStats(ns);
 
     // Compter les serveurs personnels
     const purchasedServers = ns.getPurchasedServers();
@@ -226,25 +297,32 @@ function printStatus(ns, startTime) {
     // Compter les hacknet nodes
     const hacknetNodes = ns.hacknet.numNodes();
 
-    printBanner(ns);
+    printBanner(ns, bnConfig);
 
     ns.print("📊 STATISTIQUES");
     ns.print("─────────────────────────────────────────");
     ns.print(`⏱️ Temps d'exécution: ${formatTime(runtime)}`);
     ns.print(`💰 Argent: ${formatMoney(money)}`);
+    ns.print(`🎮 Phase: ${state.phase?.toUpperCase() || "?"}`);
     ns.print(`🖥️ Serveurs: ${rootedServers}/${servers.length} rootés`);
     ns.print(`📦 Serveurs perso: ${purchasedServers.length}/25`);
     ns.print(`🌐 Hacknet Nodes: ${hacknetNodes}`);
-    ns.print(`💾 RAM réseau: ${formatRam(usedRam)} / ${formatRam(totalRam)}`);
+    ns.print(`💾 RAM réseau: ${formatRam(ramStats.used)} / ${formatRam(ramStats.total)}`);
     ns.print("");
 
     ns.print("🔧 DAEMONS");
     ns.print("─────────────────────────────────────────");
 
     for (const daemon of DAEMONS) {
+        if (daemon.skip) {
+            ns.print(`⏭️ ${daemon.name} (skipped)`);
+            continue;
+        }
+
         const running = ns.isRunning(daemon.script, "home");
         const status = running ? "🟢" : "🔴";
-        ns.print(`${status} ${daemon.name}`);
+        const priorityMark = daemon.priority ? "⭐" : " ";
+        ns.print(`${status}${priorityMark} ${daemon.name}`);
     }
     ns.print("");
 

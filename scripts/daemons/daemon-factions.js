@@ -1,19 +1,44 @@
 /**
- * Bitburner AI - Faction & Augmentation Daemon
+ * Bitburner AI - Faction & Augmentation Daemon v2.0
  * Automatisation de la gestion des factions et achat d'augmentations
  * 
- * Fonctionnalités:
- * - Rejoint automatiquement les factions invitées
- * - Travaille pour les factions pour gagner de la réputation
- * - Achète automatiquement les augmentations disponibles
- * - Achète les augmentations NeuroFlux Governor en boucle
+ * Améliorations v2.0:
+ * - Prioritisation des augmentations par stats hacking
+ * - Work automatique vers les meilleures augmentations
+ * - Backdoor automation amélioré
+ * - Reputation tracking
+ * - Feedback vers optimizer
  * 
  * Nécessite: Singularity API (BitNode 4 ou Source-File 4)
  * 
  * Usage: run daemon-factions.js
  */
 
-import { findPath } from "/lib/utils.js";
+import { findPath, formatMoney } from "../lib/utils.js";
+import { getState, sendFeedback } from "../lib/brain-state.js";
+
+// Serveurs importants pour backdoor
+const PLOT_SERVERS = [
+    { host: "CSEC", faction: "CyberSec" },
+    { host: "avmnite-02h", faction: "NiteSec" },
+    { host: "I.I.I.I", faction: "The Black Hand" },
+    { host: "run4theh111z", faction: "BitRunners" },
+];
+
+// Priorité des augmentations par type
+const AUG_PRIORITY = {
+    hacking: 10,
+    hacking_chance: 9,
+    hacking_speed: 9,
+    hacking_money: 8,
+    hacking_grow: 7,
+    hacking_exp: 6,
+    faction_rep: 5,
+    company_rep: 4,
+    crime: 3,
+    combat: 2,
+    charisma: 1,
+};
 
 /** @param {NS} ns */
 export async function main(ns) {
@@ -28,187 +53,265 @@ export async function main(ns) {
         return;
     }
 
-    const FACTION_WORK_TYPE = "hacking"; // ou "field" ou "security"
+    let lastFeedbackTime = 0;
+    let totalAugsBought = 0;
 
     while (true) {
+        const state = getState(ns);
+        const money = ns.getServerMoneyAvailable("home");
+
         ns.clearLog();
         ns.print("═══════════════════════════════════════");
-        ns.print("  🧬 FACTION DAEMON");
+        ns.print("  🧬 FACTION DAEMON v2.0");
         ns.print("═══════════════════════════════════════");
+        ns.print(`💰 Argent: ${formatMoney(money)}`);
 
-        // 1. Rejoindre les factions
+        // 1. Rejoindre les factions invitées
         const invites = ns.singularity.checkFactionInvitations();
         for (const faction of invites) {
-            // Liste d'exclusion optionnelle (ex: ne pas rejoindre les villes rivales si on veut se focaliser)
-            // Pour l'instant on rejoint tout
             if (ns.singularity.joinFaction(faction)) {
                 ns.print(`✅ Rejoint: ${faction}`);
                 ns.toast(`Rejoint ${faction}`, "success");
             }
         }
 
-        // 2. Gestion des augmentations
+        // 2. Collecter les stats
         const myFactions = ns.getPlayer().factions;
-        const ownedAugs = ns.singularity.getOwnedAugmentations(true); // true = inclure celles achetées mais pas installées
-        const money = ns.getServerMoneyAvailable("home");
+        const ownedAugs = ns.singularity.getOwnedAugmentations(true);
+        const installedAugs = ns.singularity.getOwnedAugmentations(false);
+        const pendingAugs = ownedAugs.length - installedAugs.length;
 
-        let bestAug = null;
+        ns.print(`🏛️ Factions: ${myFactions.length}`);
+        ns.print(`🧬 Augmentations: ${installedAugs.length} (+${pendingAugs} pending)`);
+        ns.print("");
 
-        for (const faction of myFactions) {
+        // 3. Trouver les meilleures augmentations disponibles
+        const availableAugs = getAvailableAugmentations(ns, myFactions, ownedAugs);
+        const sortedAugs = prioritizeAugmentations(ns, availableAugs);
+
+        // 4. Acheter les augmentations
+        for (const aug of sortedAugs) {
+            if (money >= aug.cost) {
+                if (ns.singularity.purchaseAugmentation(aug.faction, aug.name)) {
+                    ns.print(`🧬 ACHETÉ: ${aug.name} (${formatMoney(aug.cost)})`);
+                    ns.toast(`Acheté ${aug.name}`, "success");
+                    totalAugsBought++;
+                }
+            }
+        }
+
+        // 5. NeuroFlux Governor (si on a beaucoup d'argent)
+        if (money > 50e9) {
+            for (const faction of myFactions) {
+                try {
+                    if (ns.singularity.purchaseAugmentation(faction, "NeuroFlux Governor")) {
+                        ns.print(`🧠 ACHETÉ: NeuroFlux Governor`);
+                        totalAugsBought++;
+                        break;
+                    }
+                } catch (e) { }
+            }
+        }
+
+        // 6. Afficher les meilleures augmentations disponibles
+        ns.print("🎯 Meilleures augmentations:");
+        for (const aug of sortedAugs.slice(0, 5)) {
+            const repStatus = aug.hasRep ? "✅" : `❌ ${formatRep(aug.repNeeded - aug.currentRep)}`;
+            const costStatus = money >= aug.cost ? "✅" : `❌ ${formatMoney(aug.cost - money)}`;
+            ns.print(`   ${aug.name}`);
+            ns.print(`      Rep: ${repStatus} | Cost: ${costStatus}`);
+        }
+        ns.print("");
+
+        // 7. Travailler pour une faction
+        await manageFactionWork(ns, myFactions, ownedAugs, sortedAugs, state);
+
+        // 8. Gérer les backdoors
+        await manageBackdoors(ns);
+
+        // 9. Warning si beaucoup d'augs en attente
+        if (pendingAugs >= 5) {
+            ns.print("⚠️ CONSEIL: Installez les augmentations via Soft Reset!");
+        }
+
+        // Feedback
+        if (Date.now() - lastFeedbackTime > 60000) {
+            sendFeedback(ns, "factions", {
+                factions: myFactions.length,
+                augsInstalled: installedAugs.length,
+                augsPending: pendingAugs,
+                augsBought: totalAugsBought,
+            });
+            lastFeedbackTime = Date.now();
+        }
+
+        await ns.sleep(60000); // Check toutes les minutes
+    }
+}
+
+/**
+ * Obtenir les augmentations disponibles
+ */
+function getAvailableAugmentations(ns, factions, ownedAugs) {
+    const available = [];
+
+    for (const faction of factions) {
+        try {
+            const factionRep = ns.singularity.getFactionRep(faction);
             const augs = ns.singularity.getAugmentationsFromFaction(faction);
 
             for (const augName of augs) {
+                if (augName === "NeuroFlux Governor") continue;
                 if (ownedAugs.includes(augName)) continue;
 
-                // Prérequis
+                // Vérifier les prérequis
                 const prereqs = ns.singularity.getAugmentationPrereq(augName);
                 if (prereqs.some(p => !ownedAugs.includes(p))) continue;
 
                 const cost = ns.singularity.getAugmentationPrice(augName);
                 const repReq = ns.singularity.getAugmentationRepReq(augName);
-                const factionRep = ns.singularity.getFactionRep(faction);
+                const hasRep = factionRep >= repReq;
 
-                // Si on a assez de réputation
-                if (factionRep >= repReq) {
-                    // Si on a assez d'argent
-                    if (money >= cost) {
-                        // Priorité aux augmentations de hacking
-                        const stats = ns.singularity.getAugmentationStats(augName);
-                        let isHacking = false;
-                        if (stats.hacking_chance_mult || stats.hacking_speed_mult || stats.hacking_money_mult || stats.hacking_grow_mult) {
-                            isHacking = true;
-                        }
+                available.push({
+                    name: augName,
+                    faction,
+                    cost,
+                    repReq,
+                    currentRep: factionRep,
+                    repNeeded: repReq,
+                    hasRep,
+                });
+            }
+        } catch (e) { }
+    }
 
-                        // Acheter immédiatement si c'est important ou si on a beaucoup d'argent
-                        if (isHacking || money > cost * 10) {
-                            if (ns.singularity.purchaseAugmentation(faction, augName)) {
-                                ns.print(`🧬 ACHETÉ: ${augName} ($${formatMoney(cost)})`);
-                                ns.toast(`Acheté ${augName}`, "success");
-                                // Recalculer l'argent
-                            }
-                        }
-                    }
-                } else {
-                    // Candidat pour le travail : on veut cette augmentation mais pas assez de rep
-                    // On choisit celui qui demande le moins de temps restant
-                    /* 
-                       Ceci est une logique simplifiée. Pour une vraie opti, il faudrait prioriser 
-                       les factions qui ont les augs les plus puissantes. 
-                       Pour l'instant, on travaille pour la faction qui a une aug achetable "bientôt". 
-                    */
+    return available;
+}
+
+/**
+ * Prioritiser les augmentations
+ */
+function prioritizeAugmentations(ns, augs) {
+    const scored = augs.map(aug => {
+        let score = 0;
+
+        try {
+            const stats = ns.singularity.getAugmentationStats(aug.name);
+
+            // Scorer selon les multiplicateurs
+            for (const [key, value] of Object.entries(stats)) {
+                if (key.includes("hacking") && !key.includes("exp")) {
+                    score += (value - 1) * AUG_PRIORITY.hacking * 100;
                 }
+                if (key.includes("hacking_exp")) {
+                    score += (value - 1) * AUG_PRIORITY.hacking_exp * 100;
+                }
+                if (key.includes("faction_rep")) {
+                    score += (value - 1) * AUG_PRIORITY.faction_rep * 100;
+                }
+            }
+        } catch (e) { }
+
+        // Bonus si on a la rep et l'argent
+        if (aug.hasRep) score += 50;
+
+        return { ...aug, score };
+    });
+
+    // Trier par score puis par coût
+    scored.sort((a, b) => {
+        // Priorité 1: Ceux qu'on peut acheter maintenant
+        if (a.hasRep && !b.hasRep) return -1;
+        if (!a.hasRep && b.hasRep) return 1;
+
+        // Priorité 2: Score
+        if (b.score !== a.score) return b.score - a.score;
+
+        // Priorité 3: Moins cher d'abord
+        return a.cost - b.cost;
+    });
+
+    return scored;
+}
+
+/**
+ * Gérer le travail pour les factions
+ */
+async function manageFactionWork(ns, factions, ownedAugs, targetAugs, state) {
+    const currentWork = ns.singularity.getCurrentWork();
+
+    // Si déjà en train de travailler, afficher
+    if (currentWork && currentWork.type === "FACTION") {
+        ns.print(`🔨 Travail: ${currentWork.factionName}`);
+        return;
+    }
+
+    // Si pas de travail, trouver la meilleure faction
+    if (!currentWork) {
+        // Trouver la faction avec les meilleures augs non débloquées
+        let targetFaction = null;
+        let bestScore = 0;
+
+        for (const aug of targetAugs) {
+            if (!aug.hasRep && aug.score > bestScore) {
+                bestScore = aug.score;
+                targetFaction = aug.faction;
             }
         }
 
-        // 3. NeuroFlux Governor (si on a de l'argent en trop)
-        if (money > 100e9) { // Garder un buffer
-            for (const faction of myFactions) {
-                if (ns.singularity.purchaseAugmentation(faction, "NeuroFlux Governor")) {
-                    ns.print(`🧠 ACHETÉ: NeuroFlux Governor chez ${faction}`);
-                    break; // Un par cycle pour ne pas drainer tout l'argent
-                }
-            }
-        }
-
-        // 4. Travailler pour une faction (logique simple)
-        // Si on ne fait rien d'autre (pas de crime, pas d'étude), on travaille
-        const currentWork = ns.singularity.getCurrentWork();
-
-        if (!currentWork) {
-            // Trouver une faction pour laquelle travailler
-            // Priorité: Factions avec augs non achetées
-            let targetFaction = null;
-
-            for (const faction of myFactions) {
-                const augs = ns.singularity.getAugmentationsFromFaction(faction);
-                const unowned = augs.filter(a => !ownedAugs.includes(a) && a !== "NeuroFlux Governor");
-                if (unowned.length > 0) {
-                    targetFaction = faction;
-                    break;
-                }
-            }
-
-            if (targetFaction) {
+        if (targetFaction) {
+            try {
+                // Essayer hacking d'abord
+                ns.singularity.workForFaction(targetFaction, "hacking", false);
+                ns.print(`🔨 Nouveau travail: ${targetFaction}`);
+            } catch (e) {
                 try {
-                    ns.singularity.workForFaction(targetFaction, FACTION_WORK_TYPE, false);
-                    ns.print(`🔨 Travail: ${targetFaction}`);
-                } catch (e) {
                     ns.singularity.workForFaction(targetFaction, "field", false);
-                }
+                } catch (e2) { }
             }
         }
-
-        // Afficher l'état
-        const installed = ns.singularity.getOwnedAugmentations(false).length;
-        const queued = ownedAugs.length - installed;
-
-        ns.print("");
-        ns.print(`🧬 Augmentations: ${installed} installées`);
-        ns.print(`📦 En attente: ${queued} (Reset requis)`);
-
-        if (queued > 5) {
-            ns.print("⚠️ CONSEIL: Installez les augmentations via Soft Reset");
-        }
-
-        // 5. Backdoor automatique (Story / Factions)
-        await manageBackdoors(ns);
-
-        await ns.sleep(60000); // 1 minute
     }
 }
 
 /**
- * Gérer les backdoors pour les factions
- * @param {NS} ns
+ * Gérer les backdoors automatiques
  */
 async function manageBackdoors(ns) {
-    const PLOT_SERVERS = [
-        "CSEC",         // CyberSec
-        "avmnite-0xh",  // NiteSec
-        "I.I.I.I",      // The Black Hand
-        "run4theh111z", // BitRunners
-    ];
-
-    for (const host of PLOT_SERVERS) {
-        const server = ns.getServer(host);
-
-        // Si non rooté, on ne peut pas backdoor
-        if (!server.hasAdminRights) continue;
-
-        // Si déjà backdoored, skip
-        if (server.backdoorInstalled) continue;
-
-        // Si niveau insuffisant, skip
-        if (ns.getHackingLevel() < server.requiredHackingSkill) continue;
-
-        ns.print(`🚪 Backdoor: ${host}...`);
-
-        // Trouver le chemin
-        const path = findPath(ns, host);
-        if (path.length === 0) continue;
-
-        // Se connecter
-        for (const jump of path) {
-            ns.singularity.connect(jump);
-        }
-
-        // Installer
+    for (const { host, faction } of PLOT_SERVERS) {
         try {
-            await ns.singularity.installBackdoor();
-            ns.toast(`Backdoor: ${host}`, "success");
-            ns.print(`✅ Backdoor installé sur ${host}`);
-        } catch (e) {
-            ns.print(`❌ Echec backdoor ${host}: ${e}`);
-        }
+            const server = ns.getServer(host);
 
-        // Retour maison
-        ns.singularity.connect("home");
+            if (!server.hasAdminRights) continue;
+            if (server.backdoorInstalled) continue;
+            if (ns.getHackingLevel() < server.requiredHackingSkill) continue;
+
+            ns.print(`🚪 Backdoor: ${host}...`);
+
+            const path = findPath(ns, host);
+            if (path.length === 0) continue;
+
+            // Se connecter
+            for (const jump of path) {
+                ns.singularity.connect(jump);
+            }
+
+            // Installer
+            try {
+                await ns.singularity.installBackdoor();
+                ns.toast(`Backdoor: ${host}`, "success");
+                ns.print(`✅ Backdoor installé sur ${host}`);
+            } catch (e) {
+                ns.print(`❌ Echec backdoor ${host}`);
+            }
+
+            // Retour maison
+            ns.singularity.connect("home");
+            return; // Un backdoor par cycle
+        } catch (e) { }
     }
 }
 
-function formatMoney(n) {
-    if (n >= 1e12) return (n / 1e12).toFixed(2) + "t";
-    if (n >= 1e9) return (n / 1e9).toFixed(2) + "b";
+function formatRep(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(2) + "m";
     if (n >= 1e3) return (n / 1e3).toFixed(2) + "k";
     return n.toFixed(0);

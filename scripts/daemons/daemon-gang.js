@@ -1,18 +1,20 @@
 /**
- * Bitburner AI - Gang Daemon
- * Automatisation complète de la gestion de gang
+ * Bitburner AI - Gang Daemon v2.0
+ * Gestion optimisée du gang avec timing d'ascension optimal
  * 
- * Fonctionnalités:
- * - Recrutement automatique de membres
- * - Assignation optimale des tâches
- * - Achat d'équipement
- * - Gestion du territoire
- * - Évite les conflits perdants
+ * Améliorations v2.0:
+ * - Seuil d'ascension à 1.5x minimum
+ * - Task rotation intelligente (respect/money/territory)
+ * - Intégration brain-state
+ * - Power farming si win chance > 80%
+ * - Equipment prioritization
  * 
- * Nécessite: Accès Gang (rejoindre une faction criminelle)
+ * Nécessite: Accès Gang (faction criminelle)
  * 
  * Usage: run daemon-gang.js
  */
+
+import { getState, sendFeedback } from "../lib/brain-state.js";
 
 /** @param {NS} ns */
 export async function main(ns) {
@@ -31,28 +33,42 @@ export async function main(ns) {
         return;
     }
 
+    // Configuration
+    const config = {
+        ascensionThreshold: 1.5,       // Ascend si gain > 50%
+        wantedPenaltyThreshold: 0.9,   // Vigilante si penalty < 90%
+        respectForMoney: 5000,          // Switch to money après X respect
+        territoryWinChance: 0.65,       // Activer guerre si > 65% chance
+        equipmentBuyMultiplier: 5,      // Équipement si argent > coût * 5
+    };
+
     const gangInfo = ns.gang.getGangInformation();
     ns.print(`🔫 Gang: ${gangInfo.faction}`);
     ns.print(`   Type: ${gangInfo.isHacking ? "Hacking" : "Combat"}`);
 
+    let lastFeedbackTime = 0;
+
     while (true) {
         const info = ns.gang.getGangInformation();
         const members = ns.gang.getMemberNames();
+        const state = getState(ns);
 
         ns.clearLog();
         ns.print("═══════════════════════════════════════");
-        ns.print("  🔫 GANG DAEMON");
+        ns.print("  🔫 GANG DAEMON v2.0");
         ns.print("═══════════════════════════════════════");
-        ns.print(`💰 Argent: $${formatMoney(info.moneyGainRate * 5)}/sec`);
+        ns.print(`💰 Revenu: $${formatMoney(info.moneyGainRate * 5)}/sec`);
         ns.print(`⭐ Respect: ${formatMoney(info.respect)}`);
         ns.print(`💪 Pouvoir: ${info.power.toFixed(2)}`);
         ns.print(`🏴 Territoire: ${(info.territory * 100).toFixed(1)}%`);
+        ns.print(`⚠️ Wanted Penalty: ${(info.wantedPenalty * 100).toFixed(1)}%`);
         ns.print(`👥 Membres: ${members.length}/12`);
+        ns.print(`⚔️ Guerre: ${info.territoryWarfareEngaged ? "ON" : "OFF"}`);
         ns.print("");
 
         // 1. Recruter des nouveaux membres
         while (ns.gang.canRecruitMember()) {
-            const name = `Gangster-${members.length + 1}`;
+            const name = generateMemberName(members.length);
             const success = ns.gang.recruitMember(name);
             if (success) {
                 ns.print(`✅ Recruté: ${name}`);
@@ -60,108 +76,68 @@ export async function main(ns) {
             }
         }
 
-        // 2. Assigner les tâches optimales
-        const tasks = ns.gang.getTaskNames();
+        // 2. Gérer les ascensions (AVANT les tâches)
         const updatedMembers = ns.gang.getMemberNames();
+        for (const member of updatedMembers) {
+            handleAscension(ns, member, info, config);
+        }
 
+        // 3. Assigner les tâches optimales
         for (const member of updatedMembers) {
             const memberInfo = ns.gang.getMemberInformation(member);
-            const optimalTask = findOptimalTask(ns, memberInfo, info);
+            const optimalTask = findOptimalTask(ns, memberInfo, info, state, config);
 
             if (memberInfo.task !== optimalTask) {
                 ns.gang.setMemberTask(member, optimalTask);
             }
         }
 
-        // 3. Acheter l'équipement
-        const equipment = ns.gang.getEquipmentNames();
-        for (const member of updatedMembers) {
-            const memberInfo = ns.gang.getMemberInformation(member);
+        // 4. Acheter l'équipement (priorisé)
+        buyEquipment(ns, updatedMembers, info, config);
 
-            for (const equip of equipment) {
-                if (!memberInfo.upgrades.includes(equip) && !memberInfo.augmentations.includes(equip)) {
-                    const cost = ns.gang.getEquipmentCost(equip);
-                    const money = ns.getServerMoneyAvailable("home");
-
-                    // Acheter si on a 10x le coût
-                    if (money > cost * 10) {
-                        ns.gang.purchaseEquipment(member, equip);
-                    }
-                }
-            }
-        }
-
-        // 4. Gérer les guerres de territoire
-        if (info.territoryWarfareEngaged) {
-            // Vérifier si on peut gagner
-            const otherGangs = getOtherGangs(ns);
-            let canWin = true;
-
-            for (const [gang, data] of Object.entries(otherGangs)) {
-                if (data.territory > 0) {
-                    const winChance = ns.gang.getChanceToWinClash(gang);
-                    if (winChance < 0.55) {
-                        canWin = false;
-                        break;
-                    }
-                }
-            }
-
-            if (!canWin) {
-                ns.gang.setTerritoryWarfare(false);
-                ns.print("⚠️ Guerre désactivée (trop risqué)");
-            }
-        } else {
-            // Activer si on peut gagner
-            const otherGangs = getOtherGangs(ns);
-            let shouldFight = true;
-
-            for (const [gang, data] of Object.entries(otherGangs)) {
-                if (data.territory > 0) {
-                    const winChance = ns.gang.getChanceToWinClash(gang);
-                    if (winChance < 0.6) {
-                        shouldFight = false;
-                        break;
-                    }
-                }
-            }
-
-            if (shouldFight && info.territory < 1) {
-                ns.gang.setTerritoryWarfare(true);
-                ns.print("⚔️ Guerre de territoire activée!");
-            }
-        }
-
-        // 5. Ascension (Reset pour multiplicateurs)
-        for (const member of updatedMembers) {
-            const result = ns.gang.getAscensionResult(member);
-            if (result) {
-                // Seuil d'ascension: 1.1x (10% boost)
-                const threshold = 1.1;
-                let shouldAscend = false;
-
-                if (info.isHacking) {
-                    if (result.hack > threshold) shouldAscend = true;
-                } else {
-                    if (result.str > threshold) shouldAscend = true;
-                }
-
-                if (shouldAscend) {
-                    ns.gang.ascendMember(member);
-                    ns.print(`🆙 Ascension: ${member}`);
-                    ns.toast(`Ascension: ${member}`, "info");
-                }
-            }
-        }
+        // 5. Gérer les guerres de territoire
+        manageTerritoryWarfare(ns, info, config);
 
         // Afficher les membres
         ns.print("👥 Membres:");
         for (const member of updatedMembers.slice(0, 6)) {
             const m = ns.gang.getMemberInformation(member);
-            ns.print(`   ${member}: ${m.task}`);
+            const ascResult = ns.gang.getAscensionResult(member);
+            let ascText = "";
+            if (ascResult) {
+                const mainStat = info.isHacking ? ascResult.hack : ascResult.str;
+                if (mainStat >= config.ascensionThreshold) {
+                    ascText = ` [🆙 ${(mainStat * 100 - 100).toFixed(0)}%]`;
+                }
+            }
+            ns.print(`   ${member}: ${m.task}${ascText}`);
         }
         if (updatedMembers.length > 6) {
             ns.print(`   ... et ${updatedMembers.length - 6} autres`);
+        }
+
+        // Afficher les chances de victoire
+        ns.print("");
+        ns.print("⚔️ Chances de victoire:");
+        const otherGangs = getOtherGangs(ns);
+        for (const [gang, data] of Object.entries(otherGangs)) {
+            if (data.territory > 0) {
+                const chance = ns.gang.getChanceToWinClash(gang);
+                const icon = chance >= 0.65 ? "🟢" : chance >= 0.5 ? "🟡" : "🔴";
+                ns.print(`   ${icon} ${gang}: ${(chance * 100).toFixed(0)}%`);
+            }
+        }
+
+        // Feedback
+        if (Date.now() - lastFeedbackTime > 30000) {
+            sendFeedback(ns, "gang", {
+                respect: info.respect,
+                power: info.power,
+                territory: info.territory,
+                members: members.length,
+                income: info.moneyGainRate * 5,
+            });
+            lastFeedbackTime = Date.now();
         }
 
         await ns.sleep(10000);
@@ -169,34 +145,177 @@ export async function main(ns) {
 }
 
 /**
+ * Générer un nom de membre stylé
+ */
+function generateMemberName(index) {
+    const prefixes = ["Shadow", "Cyber", "Blade", "Ghost", "Neon", "Zero", "Hex", "Byte", "Rogue", "Omega"];
+    const suffixes = ["X", "Prime", "V2", "Neo", "Zeta", "Core", "Alpha", "Beta"];
+
+    const prefix = prefixes[index % prefixes.length];
+    const suffix = suffixes[Math.floor(index / prefixes.length) % suffixes.length];
+
+    return `${prefix}-${suffix}`;
+}
+
+/**
+ * Gérer l'ascension d'un membre
+ */
+function handleAscension(ns, member, gangInfo, config) {
+    const result = ns.gang.getAscensionResult(member);
+    if (!result) return;
+
+    // Déterminer le stat principal
+    const mainStatGain = gangInfo.isHacking ? result.hack : result.str;
+    const secondaryGain = gangInfo.isHacking ?
+        Math.max(result.cha, result.str) :
+        Math.max(result.agi, result.dex, result.def);
+
+    // Ascend si le gain principal dépasse le seuil
+    // OU si le gain combiné est significatif
+    if (mainStatGain >= config.ascensionThreshold ||
+        (mainStatGain >= 1.3 && secondaryGain >= 1.3)) {
+        ns.gang.ascendMember(member);
+        ns.print(`🆙 Ascension: ${member} (+${((mainStatGain - 1) * 100).toFixed(0)}%)`);
+        ns.toast(`Ascension: ${member}`, "info");
+    }
+}
+
+/**
  * Trouver la tâche optimale pour un membre
  */
-function findOptimalTask(ns, member, gangInfo) {
-    const respect = gangInfo.respect;
-    const wantedLevel = gangInfo.wantedLevel;
-    const wantedPenalty = gangInfo.wantedPenalty;
-
-    // Si le wanted penalty est trop élevé, réduire
-    if (wantedPenalty < 0.9 && wantedLevel > 1) {
+function findOptimalTask(ns, member, gangInfo, state, config) {
+    // 1. Si wanted penalty trop bas, nettoyer
+    if (gangInfo.wantedPenalty < config.wantedPenaltyThreshold && gangInfo.wantedLevel > 1) {
         return "Vigilante Justice";
     }
 
-    // Si peu de respect, farm le respect
-    if (respect < 1000) {
-        return gangInfo.isHacking ? "Ransomware" : "Mug People";
+    // 2. Si guerre de territoire active et on peut gagner, focus territoire
+    if (gangInfo.territoryWarfareEngaged && gangInfo.territory < 1) {
+        // Les membres forts font du territory warfare
+        const power = gangInfo.isHacking ? member.hack : member.str;
+        if (power > 100) {
+            return "Territory Warfare";
+        }
     }
 
-    // Sinon, faire de l'argent
-    if (member.hack > member.str) {
-        // Hacking member
-        if (member.hack > 500) return "Money Laundering";
-        if (member.hack > 200) return "Phishing";
+    // 3. Si peu de respect, farm le respect
+    if (gangInfo.respect < config.respectForMoney) {
+        return getBestRespectTask(member, gangInfo);
+    }
+
+    // 4. Priorité globale du système
+    if (state.priority === "rep" || state.priority === "gang") {
+        return getBestRespectTask(member, gangInfo);
+    }
+
+    // 5. Sinon, faire de l'argent
+    return getBestMoneyTask(member, gangInfo);
+}
+
+/**
+ * Meilleure tâche pour le respect
+ */
+function getBestRespectTask(member, gangInfo) {
+    if (gangInfo.isHacking) {
+        if (member.hack > 500) return "Cyberterrorism";
+        if (member.hack > 200) return "Money Laundering";
+        if (member.hack > 50) return "Phishing";
         return "Ransomware";
     } else {
-        // Combat member
+        if (member.str > 500) return "Human Trafficking";
+        if (member.str > 200) return "Terrorism";
+        if (member.str > 50) return "Armed Robbery";
+        return "Mug People";
+    }
+}
+
+/**
+ * Meilleure tâche pour l'argent
+ */
+function getBestMoneyTask(member, gangInfo) {
+    if (gangInfo.isHacking) {
+        if (member.hack > 500) return "Money Laundering";
+        if (member.hack > 200) return "Fraud";
+        if (member.hack > 50) return "Phishing";
+        return "Ransomware";
+    } else {
         if (member.str > 500) return "Human Trafficking";
         if (member.str > 200) return "Armed Robbery";
+        if (member.str > 50) return "Strongarm Civilians";
         return "Mug People";
+    }
+}
+
+/**
+ * Acheter l'équipement (priorisé par utilité)
+ */
+function buyEquipment(ns, members, gangInfo, config) {
+    const money = ns.getServerMoneyAvailable("home");
+    const equipment = ns.gang.getEquipmentNames();
+
+    // Prioriser par type: Armes > Armures > Véhicules > Rootkits > Augmentations
+    const priorityOrder = gangInfo.isHacking ?
+        ["Rootkit", "Weapon", "Armor", "Vehicle", "Augmentation"] :
+        ["Weapon", "Armor", "Vehicle", "Rootkit", "Augmentation"];
+
+    // Trier l'équipement par priorité et coût
+    const sortedEquip = equipment.map(e => ({
+        name: e,
+        cost: ns.gang.getEquipmentCost(e),
+        type: ns.gang.getEquipmentType(e),
+    })).sort((a, b) => {
+        const aPrio = priorityOrder.indexOf(a.type);
+        const bPrio = priorityOrder.indexOf(b.type);
+        if (aPrio !== bPrio) return aPrio - bPrio;
+        return a.cost - b.cost;
+    });
+
+    for (const member of members) {
+        const memberInfo = ns.gang.getMemberInformation(member);
+        const owned = [...memberInfo.upgrades, ...memberInfo.augmentations];
+
+        for (const equip of sortedEquip) {
+            if (owned.includes(equip.name)) continue;
+
+            if (money > equip.cost * config.equipmentBuyMultiplier) {
+                ns.gang.purchaseEquipment(member, equip.name);
+            }
+        }
+    }
+}
+
+/**
+ * Gérer les guerres de territoire
+ */
+function manageTerritoryWarfare(ns, info, config) {
+    const otherGangs = getOtherGangs(ns);
+
+    // Calculer la chance minimale contre tous les gangs avec du territoire
+    let minWinChance = 1;
+    let hasOpponents = false;
+
+    for (const [gang, data] of Object.entries(otherGangs)) {
+        if (data.territory > 0) {
+            hasOpponents = true;
+            const chance = ns.gang.getChanceToWinClash(gang);
+            minWinChance = Math.min(minWinChance, chance);
+        }
+    }
+
+    // Décision d'activer/désactiver la guerre
+    if (info.territoryWarfareEngaged) {
+        // Désactiver si on ne peut plus gagner facilement
+        if (minWinChance < 0.5) {
+            ns.gang.setTerritoryWarfare(false);
+            ns.print("⚠️ Guerre désactivée (risque élevé)");
+        }
+    } else {
+        // Activer si on peut gagner et qu'on n'a pas 100% du territoire
+        if (hasOpponents && info.territory < 1 && minWinChance >= config.territoryWinChance) {
+            ns.gang.setTerritoryWarfare(true);
+            ns.print("⚔️ Guerre activée!");
+            ns.toast("Guerre de territoire activée!", "warning");
+        }
     }
 }
 
@@ -204,19 +323,14 @@ function findOptimalTask(ns, member, gangInfo) {
  * Obtenir les informations des autres gangs
  */
 function getOtherGangs(ns) {
-    const gangs = {};
-    const allGangs = ["Slum Snakes", "Tetrads", "The Syndicate", "The Dark Army", "Speakers for the Dead", "NiteSec", "The Black Hand"];
-
-    for (const gang of allGangs) {
-        try {
-            const info = ns.gang.getOtherGangInformation();
-            if (info[gang]) {
-                gangs[gang] = info[gang];
-            }
-        } catch (e) { }
-    }
-
-    return gangs;
+    const result = {};
+    try {
+        const info = ns.gang.getOtherGangInformation();
+        for (const [gang, data] of Object.entries(info)) {
+            result[gang] = data;
+        }
+    } catch (e) { }
+    return result;
 }
 
 function formatMoney(n) {
