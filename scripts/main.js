@@ -1,40 +1,31 @@
 /**
- * Bitburner AI - Main Orchestrator
- * Script principal qui lance et gère tous les daemons
+ * Bitburner AI - Main Orchestrator (Lightweight)
+ * RAM optimisé: ~15GB
+ * 
+ * Gère intelligemment tous les daemons:
+ * - Démarre/arrête selon conditions et RAM
+ * - Priorité dynamique selon phase
  * 
  * Usage: run main.js
- * 
- * Ce script est le point d'entrée de l'IA Bitburner.
- * Il lance automatiquement tous les daemons et surveille leur état.
  */
 
-import { scanAll, getRootAccess, formatMoney, formatTime, formatRam } from "./lib/utils.js";
-
-// Configuration des daemons
+// ===== Configuration des Daemons =====
 const DAEMONS = [
-    { name: "Optimizer", script: "/daemons/daemon-optimizer.js", ram: 0, critical: false },
-    { name: "Hack Daemon", script: "/daemons/daemon-hack.js", ram: 0, critical: true },
-    { name: "Server Daemon", script: "/daemons/daemon-servers.js", ram: 0, critical: false },
-    { name: "Hacknet Daemon", script: "/daemons/daemon-hacknet.js", ram: 0, critical: false },
-    { name: "Contracts Daemon", script: "/daemons/daemon-contracts.js", ram: 0, critical: false },
-    { name: "Stocks Daemon", script: "/daemons/daemon-stocks.js", ram: 0, critical: false },
-    { name: "Buyer Daemon", script: "/daemons/daemon-buyer.js", ram: 0, critical: false },
-    { name: "Gang Daemon", script: "/daemons/daemon-gang.js", ram: 0, critical: false },
-    { name: "Sleeve Daemon", script: "/daemons/daemon-sleeve.js", ram: 0, critical: false },
-    { name: "Factions Daemon", script: "/daemons/daemon-factions.js", ram: 0, critical: false },
-    { name: "Stanek Daemon", script: "/daemons/daemon-stanek.js", ram: 0, critical: false },
-    { name: "Share Daemon", script: "/daemons/daemon-share.js", ram: 0, critical: false },
-    { name: "Prestige Daemon", script: "/daemons/daemon-prestige.js", ram: 0, critical: false },
-    { name: "Bladeburner", script: "/daemons/daemon-bladeburner.js", ram: 0, critical: false },
-    { name: "Corp Daemon", script: "/daemons/daemon-corp.js", ram: 0, critical: false },
+    { id: "optimizer", script: "/daemons/daemon-optimizer.js", priority: 10, name: "Optimizer" },
+    { id: "hack", script: "/daemons/daemon-hack.js", priority: 9, name: "Hack" },
+    { id: "servers", script: "/daemons/daemon-servers.js", priority: 8, name: "Servers" },
+    { id: "hacknet", script: "/daemons/daemon-hacknet.js", priority: 6, name: "Hacknet" },
+    { id: "contracts", script: "/daemons/daemon-contracts.js", priority: 5, name: "Contracts" },
+    { id: "stocks", script: "/daemons/daemon-stocks.js", priority: 7, name: "Stocks" },
+    { id: "buyer", script: "/daemons/daemon-buyer.js", priority: 7, name: "Buyer" },
+    { id: "gang", script: "/daemons/daemon-gang.js", priority: 6, name: "Gang" },
+    { id: "sleeve", script: "/daemons/daemon-sleeve.js", priority: 5, name: "Sleeve" },
+    { id: "factions", script: "/daemons/daemon-factions.js", priority: 4, name: "Factions" },
+    { id: "bladeburner", script: "/daemons/daemon-bladeburner.js", priority: 6, name: "Bladeburner" },
+    { id: "corp", script: "/daemons/daemon-corp.js", priority: 5, name: "Corp" },
 ];
 
-// Scripts à copier sur tous les serveurs
-const DEPLOY_SCRIPTS = [
-    "/workers/hack.js",
-    "/workers/grow.js",
-    "/workers/weaken.js",
-];
+const WORKERS = ["/workers/hack.js", "/workers/grow.js", "/workers/weaken.js"];
 
 /** @param {NS} ns */
 export async function main(ns) {
@@ -42,216 +33,179 @@ export async function main(ns) {
     ns.ui.openTail();
 
     const startTime = Date.now();
+    let decisions = [];
 
-    // Affichage initial
-    printBanner(ns);
+    // Charger config
+    let bnConfig = { skipDaemons: [], priorityDaemons: [], canHack: true };
+    try {
+        const data = ns.read("/data/bitnode-config.txt");
+        if (data) bnConfig = JSON.parse(data);
+    } catch (e) { }
 
-    // Phase 1: Initialisation
-    ns.print("📦 Phase 1: Initialisation...");
-    await initialize(ns);
+    // Initialisation
+    ns.print("🧠 BITBURNER AI v3.0 - Initialisation...");
 
-    // Phase 2: Propagation des accès root
-    ns.print("🔓 Phase 2: Propagation root...");
-    await propagateRoot(ns);
+    // Propager root et déployer workers
+    await propagateAndDeploy(ns);
 
-    // Phase 3: Déploiement des workers
-    ns.print("📤 Phase 3: Déploiement workers...");
-    await deployWorkers(ns);
+    ns.print("✅ Système prêt - Mode autonome");
 
-    // Phase 4: Lancement des daemons
-    ns.print("🚀 Phase 4: Lancement daemons...");
-    await launchDaemons(ns);
-
-    // Boucle principale de monitoring
-    ns.print("✅ Tous les systèmes sont opérationnels!");
-    ns.print("");
-
+    // Boucle principale
     while (true) {
         ns.clearLog();
-        printStatus(ns, startTime);
 
-        // Vérifier et relancer les daemons si nécessaire
-        await checkDaemons(ns);
+        // Stats
+        const homeRam = ns.getServerMaxRam("home");
+        const homeUsed = ns.getServerUsedRam("home");
+        const homeFree = homeRam - homeUsed;
+        const money = ns.getServerMoneyAvailable("home");
+        const hackLevel = ns.getHackingLevel();
 
-        // Continuer à propager root sur nouveaux serveurs
-        await propagateRoot(ns);
+        // Affichage
+        ns.print("╔══════════════════════════════════════╗");
+        ns.print("║    🧠 BITBURNER AI v3.0 - AUTONOME   ║");
+        ns.print("╚══════════════════════════════════════╝");
+        ns.print("");
+        ns.print(`💾 RAM Home: ${homeFree.toFixed(1)}GB / ${homeRam}GB`);
+        ns.print(`💰 Argent: ${formatMoney(money)}`);
+        ns.print(`🎓 Hack: ${hackLevel}`);
+        ns.print(`⏱️ Runtime: ${formatTime(Date.now() - startTime)}`);
+        ns.print("");
 
-        await ns.sleep(5000);
+        // Gérer les daemons
+        await manageDaemons(ns, bnConfig, decisions);
+
+        // Afficher daemons
+        ns.print("🔧 DAEMONS:");
+        for (const d of DAEMONS) {
+            if (bnConfig.skipDaemons?.includes(d.id)) continue;
+            const running = ns.isRunning(d.script, "home");
+            const icon = running ? "🟢" : "⚫";
+            ns.print(`   ${icon} ${d.name}`);
+        }
+        ns.print("");
+
+        // Décisions récentes
+        if (decisions.length > 0) {
+            ns.print("📝 Décisions:");
+            for (const d of decisions.slice(-5)) {
+                ns.print(`   ${d}`);
+            }
+        }
+
+        // Propager root périodiquement
+        await propagateAndDeploy(ns);
+
+        await ns.sleep(10000);
     }
 }
 
 /**
- * Afficher la bannière de démarrage
+ * Gérer les daemons (start/stop)
  */
-function printBanner(ns) {
-    ns.print("");
-    ns.print("╔══════════════════════════════════════════╗");
-    ns.print("║                                          ║");
-    ns.print("║     🤖 BITBURNER AI v1.0                 ║");
-    ns.print("║     Système d'automatisation avancé      ║");
-    ns.print("║                                          ║");
-    ns.print("╚══════════════════════════════════════════╝");
-    ns.print("");
-}
+async function manageDaemons(ns, bnConfig, decisions) {
+    const getFreeRam = () => ns.getServerMaxRam("home") - ns.getServerUsedRam("home");
 
-/**
- * Initialisation du système
- */
-async function initialize(ns) {
-    // Calculer la RAM de chaque daemon
+    // Calculer RAM de chaque daemon
     for (const daemon of DAEMONS) {
         daemon.ram = ns.getScriptRam(daemon.script);
-        ns.print(`   ${daemon.name}: ${formatRam(daemon.ram)}`);
+        daemon.running = ns.isRunning(daemon.script, "home");
+        daemon.skip = bnConfig.skipDaemons?.includes(daemon.id);
     }
 
-    await ns.sleep(500);
+    // Trier par priorité
+    const sorted = [...DAEMONS].sort((a, b) => b.priority - a.priority);
+
+    // Démarrer les daemons par ordre de priorité
+    for (const daemon of sorted) {
+        if (daemon.skip) continue;
+        if (daemon.running) continue;
+
+        const freeRam = getFreeRam();
+
+        if (daemon.ram <= freeRam) {
+            const pid = ns.run(daemon.script);
+            if (pid > 0) {
+                daemon.running = true;
+                const msg = `▶️ ${daemon.name} (${daemon.ram.toFixed(1)}GB)`;
+                decisions.push(msg);
+                ns.toast(msg, "success", 2000);
+                await ns.sleep(100);
+            }
+        }
+    }
+
+    // Garder les 20 dernières décisions
+    while (decisions.length > 20) decisions.shift();
 }
 
 /**
- * Propager l'accès root sur tous les serveurs
+ * Propager root et déployer workers
  */
-async function propagateRoot(ns) {
+async function propagateAndDeploy(ns) {
     const servers = scanAll(ns);
-    let newRoots = 0;
 
     for (const host of servers) {
+        // Root access
         if (!ns.hasRootAccess(host)) {
-            if (getRootAccess(ns, host)) {
-                newRoots++;
-            }
-        }
-    }
-
-    if (newRoots > 0) {
-        ns.print(`   🔓 ${newRoots} nouveau(x) serveur(s) rooté(s)`);
-    }
-}
-
-/**
- * Déployer les workers sur tous les serveurs
- */
-async function deployWorkers(ns) {
-    const servers = scanAll(ns);
-    let deployed = 0;
-
-    for (const host of servers) {
-        if (host === "home") continue;
-        if (!ns.hasRootAccess(host)) continue;
-        if (ns.getServerMaxRam(host) === 0) continue;
-
-        // Copier les scripts
-        const copied = ns.scp(DEPLOY_SCRIPTS, host, "home");
-        if (copied) deployed++;
-    }
-
-    ns.print(`   📤 Workers déployés sur ${deployed} serveur(s)`);
-}
-
-/**
- * Lancer tous les daemons
- */
-async function launchDaemons(ns) {
-    for (const daemon of DAEMONS) {
-        if (ns.isRunning(daemon.script, "home")) {
-            ns.print(`   ⏭️ ${daemon.name} déjà en cours`);
-            continue;
+            openPorts(ns, host);
+            try { ns.nuke(host); } catch (e) { }
         }
 
-        const homeRam = ns.getServerMaxRam("home");
-        const usedRam = ns.getServerUsedRam("home");
-        const freeRam = homeRam - usedRam;
-
-        if (daemon.ram > freeRam) {
-            ns.print(`   ⚠️ ${daemon.name}: RAM insuffisante (${formatRam(daemon.ram)} requis)`);
-            if (daemon.critical) {
-                ns.print(`      ❌ CRITIQUE: L'IA ne peut pas fonctionner sans ce daemon!`);
-            }
-            continue;
-        }
-
-        const pid = ns.run(daemon.script);
-
-        if (pid > 0) {
-            ns.print(`   ✅ ${daemon.name} lancé (PID: ${pid})`);
-        } else {
-            ns.print(`   ❌ ${daemon.name}: Échec du lancement`);
-        }
-
-        await ns.sleep(100);
-    }
-}
-
-/**
- * Vérifier l'état des daemons et relancer si nécessaire
- */
-async function checkDaemons(ns) {
-    for (const daemon of DAEMONS) {
-        if (!ns.isRunning(daemon.script, "home")) {
-            const homeRam = ns.getServerMaxRam("home");
-            const usedRam = ns.getServerUsedRam("home");
-            const freeRam = homeRam - usedRam;
-
-            if (daemon.ram <= freeRam) {
-                ns.print(`   🔄 Relancement de ${daemon.name}...`);
-                ns.run(daemon.script);
-            }
+        // Déployer workers
+        if (host !== "home" && ns.hasRootAccess(host) && ns.getServerMaxRam(host) > 0) {
+            ns.scp(WORKERS, host, "home");
         }
     }
 }
 
 /**
- * Afficher le statut actuel
+ * Scanner tous les serveurs
  */
-function printStatus(ns, startTime) {
-    const runtime = Date.now() - startTime;
-    const money = ns.getServerMoneyAvailable("home");
-    const servers = scanAll(ns);
+function scanAll(ns) {
+    const servers = new Set();
+    const queue = ["home"];
 
-    // Compter les serveurs avec root
-    const rootedServers = servers.filter(s => ns.hasRootAccess(s)).length;
+    while (queue.length > 0) {
+        const current = queue.shift();
+        if (servers.has(current)) continue;
+        servers.add(current);
 
-    // Calculer la RAM totale disponible
-    let totalRam = 0;
-    let usedRam = 0;
-    for (const host of servers) {
-        if (ns.hasRootAccess(host)) {
-            totalRam += ns.getServerMaxRam(host);
-            usedRam += ns.getServerUsedRam(host);
+        for (const neighbor of ns.scan(current)) {
+            if (!servers.has(neighbor)) queue.push(neighbor);
         }
     }
 
-    // Compter les serveurs personnels
-    const purchasedServers = ns.getPurchasedServers();
+    return Array.from(servers);
+}
 
-    // Compter les hacknet nodes
-    const hacknetNodes = ns.hacknet.numNodes();
+/**
+ * Ouvrir les ports
+ */
+function openPorts(ns, host) {
+    try { ns.brutessh(host); } catch (e) { }
+    try { ns.ftpcrack(host); } catch (e) { }
+    try { ns.relaysmtp(host); } catch (e) { }
+    try { ns.httpworm(host); } catch (e) { }
+    try { ns.sqlinject(host); } catch (e) { }
+}
 
-    printBanner(ns);
+/**
+ * Formater argent
+ */
+function formatMoney(n) {
+    if (n >= 1e12) return "$" + (n / 1e12).toFixed(2) + "t";
+    if (n >= 1e9) return "$" + (n / 1e9).toFixed(2) + "b";
+    if (n >= 1e6) return "$" + (n / 1e6).toFixed(2) + "m";
+    if (n >= 1e3) return "$" + (n / 1e3).toFixed(2) + "k";
+    return "$" + n.toFixed(0);
+}
 
-    ns.print("📊 STATISTIQUES");
-    ns.print("─────────────────────────────────────────");
-    ns.print(`⏱️ Temps d'exécution: ${formatTime(runtime)}`);
-    ns.print(`💰 Argent: ${formatMoney(money)}`);
-    ns.print(`🖥️ Serveurs: ${rootedServers}/${servers.length} rootés`);
-    ns.print(`📦 Serveurs perso: ${purchasedServers.length}/25`);
-    ns.print(`🌐 Hacknet Nodes: ${hacknetNodes}`);
-    ns.print(`💾 RAM réseau: ${formatRam(usedRam)} / ${formatRam(totalRam)}`);
-    ns.print("");
-
-    ns.print("🔧 DAEMONS");
-    ns.print("─────────────────────────────────────────");
-
-    for (const daemon of DAEMONS) {
-        const running = ns.isRunning(daemon.script, "home");
-        const status = running ? "🟢" : "🔴";
-        ns.print(`${status} ${daemon.name}`);
-    }
-    ns.print("");
-
-    ns.print("📈 INCOME");
-    ns.print("─────────────────────────────────────────");
-    const income = ns.getTotalScriptIncome();
-    ns.print(`💵 Scripts: ${formatMoney(income[0])}/sec`);
-    ns.print(`📊 Total depuis reset: ${formatMoney(income[1])}`);
-    ns.print("");
+/**
+ * Formater temps
+ */
+function formatTime(ms) {
+    if (ms < 60000) return (ms / 1000).toFixed(0) + "s";
+    if (ms < 3600000) return (ms / 60000).toFixed(1) + "m";
+    return (ms / 3600000).toFixed(1) + "h";
 }

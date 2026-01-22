@@ -1,168 +1,118 @@
 /**
- * Bitburner AI - Server Daemon
- * Gestion automatique des serveurs personnels
- * 
- * Achète et upgrade les serveurs automatiquement
- * 
- * Usage: run daemon-servers.js
+ * Bitburner AI - Server Daemon (Lightweight)
+ * RAM: ~4GB
  */
-
-import { SERVER_CONFIG } from "../lib/constants.js";
-import { formatMoney, formatRam } from "../lib/utils.js";
 
 /** @param {NS} ns */
 export async function main(ns) {
     ns.disableLog("ALL");
 
-    ns.print("═══════════════════════════════════════");
-    ns.print("  🖥️ BITBURNER AI - SERVER DAEMON");
-    ns.print("═══════════════════════════════════════");
+    const PREFIX = "pserv-";
+    const MAX_SERVERS = 25;
+    const COST_MULT = 2;
 
     while (true) {
         const money = ns.getServerMoneyAvailable("home");
-        const ownedServers = ns.getPurchasedServers();
+        const owned = ns.getPurchasedServers();
 
         ns.clearLog();
         ns.print("═══════════════════════════════════════");
         ns.print("  🖥️ SERVER DAEMON");
         ns.print("═══════════════════════════════════════");
         ns.print(`💰 Argent: ${formatMoney(money)}`);
-        ns.print(`🖥️ Serveurs: ${ownedServers.length}/${SERVER_CONFIG.MAX_SERVERS}`);
+        ns.print(`🖥️ Serveurs: ${owned.length}/${MAX_SERVERS}`);
         ns.print("");
 
-        // Afficher les serveurs actuels
-        if (ownedServers.length > 0) {
-            ns.print("📋 Serveurs possédés:");
-            const sortedServers = [...ownedServers].sort((a, b) => {
-                return ns.getServerMaxRam(b) - ns.getServerMaxRam(a);
-            });
-            for (const server of sortedServers.slice(0, 10)) {
-                const ram = ns.getServerMaxRam(server);
-                ns.print(`   ${server}: ${formatRam(ram)}`);
+        // Afficher serveurs
+        if (owned.length > 0) {
+            const sorted = [...owned].sort((a, b) =>
+                ns.getServerMaxRam(b) - ns.getServerMaxRam(a));
+
+            ns.print("📋 Top serveurs:");
+            for (const s of sorted.slice(0, 5)) {
+                const ram = ns.getServerMaxRam(s);
+                ns.print(`   ${s}: ${formatRam(ram)}`);
             }
-            if (sortedServers.length > 10) {
-                ns.print(`   ... et ${sortedServers.length - 10} autres`);
-            }
+            if (owned.length > 5) ns.print(`   ... +${owned.length - 5} autres`);
             ns.print("");
         }
 
-        // Déterminer la meilleure action
-        if (ownedServers.length < SERVER_CONFIG.MAX_SERVERS) {
-            // On peut encore acheter des serveurs
-            const optimalRam = getOptimalRamToBuy(ns, money);
-
-            if (optimalRam >= SERVER_CONFIG.MIN_RAM) {
-                const cost = ns.getPurchasedServerCost(optimalRam);
-
-                if (money >= cost * SERVER_CONFIG.COST_MULTIPLIER) {
-                    const serverName = `${SERVER_CONFIG.PREFIX}${ownedServers.length}`;
-                    const newServer = ns.purchaseServer(serverName, optimalRam);
-
-                    if (newServer) {
-                        ns.print(`✅ Acheté: ${newServer} (${formatRam(optimalRam)})`);
-                        ns.toast(`Nouveau serveur: ${newServer}`, "success", 3000);
+        if (owned.length < MAX_SERVERS) {
+            // Acheter
+            const ram = getOptimalRam(ns, money / COST_MULT);
+            if (ram >= 8) {
+                const cost = ns.getPurchasedServerCost(ram);
+                if (money >= cost * COST_MULT) {
+                    const name = `${PREFIX}${owned.length}`;
+                    const s = ns.purchaseServer(name, ram);
+                    if (s) {
+                        ns.print(`✅ Acheté: ${s} (${formatRam(ram)})`);
+                        ns.toast(`Serveur: ${s}`, "success");
+                        deployWorkers(ns, s);
                     }
                 } else {
-                    const nextOptimal = getOptimalRamToBuy(ns, money * SERVER_CONFIG.COST_MULTIPLIER);
-                    const nextCost = ns.getPurchasedServerCost(nextOptimal);
-                    ns.print(`⏳ Prochain achat: ${formatRam(nextOptimal)}`);
-                    ns.print(`   Coût: ${formatMoney(nextCost)}`);
-                    ns.print(`   Besoin: ${formatMoney(nextCost * SERVER_CONFIG.COST_MULTIPLIER)}`);
+                    ns.print(`⏳ Prochain: ${formatRam(ram)} = ${formatMoney(cost)}`);
                 }
             }
         } else {
-            // On a le max de serveurs, essayer d'upgrader
-            const upgraded = await tryUpgradeServer(ns, money, ownedServers);
-
-            if (!upgraded) {
-                const smallestRam = getSmallestServerRam(ns, ownedServers);
-                const nextRam = smallestRam * 2;
-
-                if (nextRam <= SERVER_CONFIG.MAX_RAM) {
-                    const upgradeCost = ns.getPurchasedServerCost(nextRam);
-                    ns.print(`⏳ Prochain upgrade: ${formatRam(smallestRam)} → ${formatRam(nextRam)}`);
-                    ns.print(`   Coût: ${formatMoney(upgradeCost)}`);
-                    ns.print(`   Besoin: ${formatMoney(upgradeCost * SERVER_CONFIG.COST_MULTIPLIER)}`);
-                } else {
-                    ns.print("🎉 Tous les serveurs sont au maximum!");
+            // Upgrader
+            let minRam = Infinity, target = null;
+            for (const s of owned) {
+                const r = ns.getServerMaxRam(s);
+                if (r < minRam && r < 1048576) {
+                    minRam = r;
+                    target = s;
                 }
+            }
+
+            if (target) {
+                const newRam = minRam * 2;
+                const cost = ns.getPurchasedServerCost(newRam);
+
+                if (money >= cost * COST_MULT) {
+                    ns.killall(target);
+                    ns.deleteServer(target);
+                    const s = ns.purchaseServer(target, newRam);
+                    if (s) {
+                        ns.print(`⬆️ Upgrade: ${formatRam(minRam)} → ${formatRam(newRam)}`);
+                        ns.toast(`Upgrade: ${s}`, "success");
+                        deployWorkers(ns, s);
+                    }
+                } else {
+                    ns.print(`⏳ Upgrade: ${formatRam(newRam)} = ${formatMoney(cost)}`);
+                }
+            } else {
+                ns.print("🎉 Tous les serveurs au max!");
             }
         }
 
-        await ns.sleep(10000); // Vérifier toutes les 10 secondes
+        await ns.sleep(10000);
     }
 }
 
-/**
- * Calculer la RAM optimale à acheter pour un budget donné
- */
-function getOptimalRamToBuy(ns, money) {
-    let ram = SERVER_CONFIG.MIN_RAM;
-
-    while (ram * 2 <= SERVER_CONFIG.MAX_RAM) {
-        const cost = ns.getPurchasedServerCost(ram * 2);
-        if (cost > money / SERVER_CONFIG.COST_MULTIPLIER) break;
+function getOptimalRam(ns, money) {
+    let ram = 8;
+    while (ram * 2 <= 1048576) {
+        if (ns.getPurchasedServerCost(ram * 2) > money) break;
         ram *= 2;
     }
-
     return ram;
 }
 
-/**
- * Trouver le serveur avec le moins de RAM
- */
-function getSmallestServerRam(ns, servers) {
-    let smallestRam = Infinity;
-
-    for (const server of servers) {
-        const ram = ns.getServerMaxRam(server);
-        if (ram < smallestRam) {
-            smallestRam = ram;
-        }
-    }
-
-    return smallestRam;
+function deployWorkers(ns, host) {
+    const files = ["/workers/hack.js", "/workers/grow.js", "/workers/weaken.js"];
+    ns.scp(files, host, "home");
 }
 
-/**
- * Tenter d'upgrader un serveur
- */
-async function tryUpgradeServer(ns, money, servers) {
-    // Trouver le serveur avec le moins de RAM
-    let minRam = Infinity;
-    let serverToUpgrade = null;
+function formatMoney(n) {
+    if (n >= 1e12) return "$" + (n / 1e12).toFixed(2) + "t";
+    if (n >= 1e9) return "$" + (n / 1e9).toFixed(2) + "b";
+    if (n >= 1e6) return "$" + (n / 1e6).toFixed(2) + "m";
+    if (n >= 1e3) return "$" + (n / 1e3).toFixed(2) + "k";
+    return "$" + n.toFixed(0);
+}
 
-    for (const server of servers) {
-        const ram = ns.getServerMaxRam(server);
-        if (ram < minRam && ram < SERVER_CONFIG.MAX_RAM) {
-            minRam = ram;
-            serverToUpgrade = server;
-        }
-    }
-
-    if (!serverToUpgrade) return false;
-
-    const newRam = minRam * 2;
-    if (newRam > SERVER_CONFIG.MAX_RAM) return false;
-
-    const cost = ns.getPurchasedServerCost(newRam);
-
-    if (money >= cost * SERVER_CONFIG.COST_MULTIPLIER) {
-        // Tuer tous les scripts sur le serveur
-        ns.killall(serverToUpgrade);
-
-        // Supprimer le serveur
-        ns.deleteServer(serverToUpgrade);
-
-        // Acheter un nouveau serveur avec plus de RAM
-        const newServer = ns.purchaseServer(serverToUpgrade, newRam);
-
-        if (newServer) {
-            ns.print(`⬆️ Upgrade: ${serverToUpgrade} (${formatRam(minRam)} → ${formatRam(newRam)})`);
-            ns.toast(`Serveur upgradé: ${newServer}`, "success", 3000);
-            return true;
-        }
-    }
-
-    return false;
+function formatRam(gb) {
+    if (gb >= 1024) return (gb / 1024).toFixed(0) + "TB";
+    return gb + "GB";
 }

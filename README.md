@@ -1,97 +1,84 @@
-# 🤖 Bitburner AI
+# 🤖 Bitburner AI v3.0
 
-Un système d'intelligence artificielle complet et autonome pour dominer [Bitburner](https://store.steampowered.com/app/1812820/Bitburner/).
-Développé en 11 Phases d'optimisation, du simple hacking jusqu'au **God Mode**.
+Système d'automatisation **intelligent et autonome** pour Bitburner.
 
-## 🚀 Installation
-
-### Prérequis
-- [Node.js](https://nodejs.org/) (pour le WebSocket serveur)
-- [Bitburner](https://store.steampowered.com/app/1812820/Bitburner/) (Steam ou Web)
-
-### Configuration Rapide
-
-1. **Cloner et Installer**
-   ```bash
-   git clone https://github.com/Vimif/Bitburner_AI.git
-   cd Bitburner_AI
-   npm install
-   ```
-
-2. **Lancer le serveur**
-   ```bash
-   npm start
-   ```
-
-3. **Connecter le jeu**
-   - Dans Bitburner : `Options` → `Remote API`
-   - Socket: `127.0.0.1:1324`
-   - Cliquez sur `Connect`
-
-## 🎮 Utilisation
-
-Une seule commande suffit pour tout gérer, du début à la fin :
+## 🚀 Quick Start
 
 ```bash
+# Terminal
+npm start
+
+# Dans Bitburner
 run start.js
 ```
 
-Le système est **intelligent** et détecte votre contexte :
-*   **Mode Early (< 32GB RAM)** : Lance `early.js`, une version légère pour bootstraper l'XP et l'argent.
-*   **Mode Advanced (≥ 32GB RAM)** : Lance `main.js`, l'orchestrateur complet avec tous les daemons.
-*   **BitNode Detection** : Il analyse le BitNode courant (ex: BN8 Trading, BN12 Cylinder) et adapte sa stratégie globale.
+## 💾 RAM Requirements
 
-## ✨ Fonctionnalités (God Mode)
+| Script | RAM |
+|--------|-----|
+| `start.js` | ~3GB |
+| `main.js` | ~15GB |
+| `early.js` | ~7GB |
 
-Le système est complet à 110% et automate **toutes** les méchaniques du jeu.
+### Daemons
 
-### 🧠 Cœur du Système
-*   **Adaptive Learning** (`daemon-optimizer.js`) : Apprend de ses erreurs, analyse la rentabilité des cibles et ajuste ses stratégies (agressif/défensif) en temps réel. Persistant entre resets.
-*   **Smart Orchestration** : Batching HWGW parfait (timing synchronisé à la milliseconde via Formulas API).
-*   **Context Aware** : Sait quand hack, quand trade, quand reset.
+| Daemon | RAM | Description |
+|--------|-----|-------------|
+| `daemon-hack` | ~8GB | Proto-batching HWGW |
+| `daemon-optimizer` | ~5GB | A/B testing |
+| `daemon-servers` | ~4GB | Achats/upgrades |
+| `daemon-hacknet` | ~4GB | Hacknet nodes |
+| `daemon-contracts` | ~5GB | Coding contracts |
+| `daemon-stocks` | ~6GB | Trading |
+| `daemon-gang` | ~5GB | Gang automation |
+| `daemon-sleeve` | ~5GB | Sleeve management |
+| `daemon-bladeburner` | ~5GB | Bladeburner ops |
+| `daemon-corp` | ~8GB | Corporation |
+| `daemon-factions` | ~8GB | Augmentations |
+| `daemon-buyer` | ~6GB | Programmes |
 
-### 🏢 Gestion Macro (Empire)
-*   **Corporation** : Création automatique, R&D, lancement de produits (Tobacco/Software), gestion budget R&D/Marketing, Market-TA.
-*   **Gang** : Recrutement, ascension automatique (optimisation multiplicateurs), guerre de territoire, achat d'équipement.
-*   **Stocks** : Trading algorithmique haute fréquence (Long & Short avec effet de levier sur BN8).
-*   **Bladeburner** : Gestion automatique des opérations, City Chaos reduction, BlackOps pour finir le jeu.
+## 🧠 Fonctionnement
 
-### 👤 Gestion Micro (Personnage)
-*   **Factions & Augmentations** : Rejoint les factions, travaille pour la réputation, achète les augmentations et NeuroFlux.
-*   **Sleeves** : Gestion des tâches (Shock recovery, Gym, Crime, Faction work, Bladeburner Diplo).
-*   **Hacknet** : Gestion optimale des Hashes (Vente pour Corp Funds, Bladeburner Rank, ou Cash).
-*   **Stanek** : Chargement automatique des fragments.
-*   **Coding Contracts** : Résolution instantanée de tous les types de puzzles.
+L'IA est **autonome**:
+1. `start.js` détecte le BitNode et lance le script approprié
+2. `main.js` orchestre les daemons selon la RAM disponible
+3. `daemon-optimizer` envoie des directives aux autres daemons
+4. Les daemons lisent les directives et s'adaptent
 
-### ⚡ Optimisations Ultimes (Phase 10-11)
-*   **Smart Share** : Utilise la RAM inutilisée pour booster la réputation (`ns.share()`) quand nécessaire.
-*   **Prestige Analyzer** : Analyse vos augmentations en file d'attente et vous dit exactement quand faire un Soft Reset.
-*   **BitNode Specialization** : Stratégies uniques par BitNode (ex: Full Trading en BN8).
+## 📊 Phases de Jeu
 
-## 📁 Structure du Projet
+| Phase | RAM | Priorités |
+|-------|-----|-----------|
+| Early | <32GB | XP, crack programs |
+| Mid | 32-128GB | Money, servers |
+| Late | >128GB | Rep, augmentations |
+| Endgame | Max | Prestige |
+
+## 📁 Structure
 
 ```
 scripts/
-├── start.js             # Lancement intelligent & Détection BitNode
-├── main.js              # Orchestrateur (Advanced Game)
-├── early.js             # Orchestrateur (Early Game)
-│
-├── daemons/             # Agents spécialisés
-│   ├── daemon-hack.js         # Hacking HWGW & Formulas
-│   ├── daemon-optimizer.js    # Machine Learning & Config
-│   ├── daemon-corp.js         # CEO Corporation
-│   ├── daemon-gang.js         # Chef de Gang
-│   ├── daemon-stocks.js       # Trader Wall Street
-│   ├── daemon-bladeburner.js  # Agent Secret
-│   ├── daemon-share.js        # Booster de Réputation
-│   ├── daemon-prestige.js     # Conseiller Reset
-│   └── ... (autres daemons)
-│
-└── lib/                 # Librairies partagées
+├── start.js          # Bootstrap (~3GB)
+├── main.js           # Orchestrateur (~15GB)
+├── early.js          # Early game (~7GB)
+├── h.js, g.js, w.js  # Mini workers (~1.7GB)
+├── daemons/          # Daemons automatisés
+├── workers/          # Workers HWGW
+└── lib/              # Utilitaires
 ```
 
-## 🤝 Contribution
-Contributions bienvenues !
+## ⚙️ Configuration BitNode
+
+`start.js` configure automatiquement selon le BitNode:
+
+| BN | Focus | Skip |
+|----|-------|------|
+| 2 | Gang | - |
+| 3 | Corp | - |
+| 6-7 | Bladeburner | - |
+| 8 | Stocks | hack |
+| 9 | Hacknet | - |
 
 ## 📜 License
+
 MIT

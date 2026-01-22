@@ -1,77 +1,87 @@
 /**
- * Bitburner AI - Universal Start Script
- * 
- * Ce script analyse la situation actuelle (RAM disponible) et lance
- * automatiquement le script le plus approprié :
- * - `early.js` si < 32GB RAM (optimisé pour faible mémoire)
- * - `main.js` si >= 32GB RAM (orchestrateur complet)
+ * Bitburner AI - Start Script (Lightweight)
+ * RAM optimisé: ~3GB
  * 
  * Usage: run start.js
  */
 
 /** @param {NS} ns */
 export async function main(ns) {
-    const ram = ns.getServerMaxRam("home");
-    const threshold = 32; // GB
+    const totalRam = ns.getServerMaxRam("home");
+    const usedRam = ns.getServerUsedRam("home");
+    const freeRam = totalRam - usedRam;
 
-    ns.tprint("═══════════════════════════════════════");
-    ns.tprint("  🚀 BITBURNER AI BOOTSTRAP");
-    ns.tprint("═══════════════════════════════════════");
-    ns.tprint(`💾 RAM Disponible: ${ram}GB`);
+    ns.tprint("╔═══════════════════════════════════════╗");
+    ns.tprint("║     🚀 BITBURNER AI v3.0 BOOTSTRAP    ║");
+    ns.tprint("╚═══════════════════════════════════════╝");
+    ns.tprint("");
+    ns.tprint(`💾 RAM Total: ${totalRam}GB | Libre: ${freeRam.toFixed(1)}GB`);
 
     // Détection BitNode
+    let bn = 1;
     try {
-        const resetInfo = ns.getResetInfo();
-        const bn = resetInfo.currentNode;
+        bn = ns.getResetInfo().currentNode;
         ns.tprint(`🌍 BitNode: ${bn}`);
-        // Sauvegarder la config BitNode pour les autres daemons
-        const bnConfig = getBitNodeConfig(bn);
-        ns.write("/data/bitnode-config.txt", JSON.stringify(bnConfig), "w");
-        ns.tprint(`💾 Config BitNode chargée pour BN${bn}`);
     } catch (e) {
-        // Fallback pour vieilles versions
-        ns.write("/data/bitnode-config.txt", JSON.stringify({ multiplier: 1, focus: "balanced" }), "w");
+        ns.tprint("⚠️ BitNode: 1 (default)");
     }
 
-    if (ram < threshold) {
-        ns.tprint("📉 Mode détecté: EARLY GAME");
-        ns.tprint("▶️ Lancement de early.js...");
-        ns.spawn("early.js");
-    } else {
-        ns.tprint("📈 Mode détecté: ADVANCED GAME");
-        ns.tprint("▶️ Lancement de main.js...");
-        ns.spawn("main.js");
-    }
-}
-
-/**
- * Configuration spécifique selon le BitNode
- */
-function getBitNodeConfig(bn) {
-    const config = {
-        multiplier: 1,
-        focus: "balanced", // "hacking", "combat", "corporation", "balanced"
-        canHack: true,
-        canBuyServers: true,
+    // Config BitNode simplifiée
+    const bnConfig = {
+        bitNode: bn,
+        focus: "balanced",
+        canHack: bn !== 8,
+        skipDaemons: [],
+        priorityDaemons: [],
     };
 
+    // Ajuster selon le BitNode
     switch (bn) {
-        case 1: // Source-File 1 (Genesis): Standard
-            break;
-        case 8: // Ghost of Wall Street: Trading only
-            config.focus = "trading";
-            config.canHack = false;
-            break;
-        case 9: // Hacktocracy: Hacknet only
-            config.focus = "hacknet";
-            break;
-        case 13: // The Stanek: Stanek focus
-            config.focus = "stanek";
-            break;
-        default:
-            config.focus = "balanced";
-            break;
+        case 2: bnConfig.focus = "gang"; bnConfig.priorityDaemons = ["gang"]; break;
+        case 3: bnConfig.focus = "corp"; bnConfig.priorityDaemons = ["corp"]; break;
+        case 6: case 7: bnConfig.focus = "bladeburner"; break;
+        case 8: bnConfig.focus = "stocks"; bnConfig.skipDaemons = ["hack"]; break;
+        case 9: bnConfig.focus = "hacknet"; break;
     }
 
-    return config;
+    ns.tprint(`🎯 Focus: ${bnConfig.focus.toUpperCase()}`);
+
+    // Sauvegarder config
+    ns.write("/data/bitnode-config.txt", JSON.stringify(bnConfig), "w");
+
+    // Initialiser brain-state
+    const state = {
+        bitNode: bn,
+        phase: "early",
+        priority: "money",
+        config: { hackPercent: 0.5 },
+        startTime: Date.now(),
+    };
+    ns.write("/data/brain-state.txt", JSON.stringify(state), "w");
+
+    ns.tprint("");
+
+    // Calculer RAM après spawn (on libère notre RAM)
+    const selfRam = ns.getScriptRam(ns.getScriptName());
+    const ramAfterSpawn = freeRam + selfRam;
+
+    // Choisir le script approprié
+    if (totalRam >= 32) {
+        const mainRam = ns.getScriptRam("main.js");
+        if (mainRam <= ramAfterSpawn) {
+            ns.tprint(`📈 Lancement main.js (${mainRam.toFixed(1)}GB)...`);
+            ns.spawn("main.js");
+            return;
+        }
+    }
+
+    const earlyRam = ns.getScriptRam("early.js");
+    if (earlyRam <= ramAfterSpawn) {
+        ns.tprint(`📉 Lancement early.js (${earlyRam.toFixed(1)}GB)...`);
+        ns.spawn("early.js");
+        return;
+    }
+
+    ns.tprint("❌ Pas assez de RAM!");
+    ns.tprint(`   Disponible: ${ramAfterSpawn.toFixed(1)}GB`);
 }
